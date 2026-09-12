@@ -60,6 +60,20 @@ export interface RoutineTemplate {
   estMin: number;
   perWeek: number;
   tag: string;
+  /** 立ち上げ作業そのもの。ステップを消化しきったら出さない */
+  untilLaunch?: boolean;
+}
+
+/** 立ち上げ後にまわす改善サイクル。状況に応じて出し分ける */
+export type CycleWhen = 'always' | 'noRevenue' | 'hasRevenue' | 'lowRate';
+
+export interface CycleTemplate {
+  id: string;
+  title: string;
+  detail: string;
+  estMin: number;
+  tag: string;
+  when: CycleWhen;
 }
 
 export interface Playbook {
@@ -79,6 +93,7 @@ export interface Playbook {
   risks: string[];
   steps: StepTemplate[];
   routines: RoutineTemplate[];
+  cycles: CycleTemplate[];
 }
 
 export interface PhaseInfo {
@@ -104,7 +119,7 @@ export interface Task {
   id: string;
   date: string; // YYYY-MM-DD
   sourceId: string; // step / routine のテンプレID
-  kind: 'step' | 'routine';
+  kind: 'step' | 'routine' | 'cycle' | 'review';
   phase: PhaseNo;
   title: string;
   detail: string;

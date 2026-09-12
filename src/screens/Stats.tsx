@@ -1,6 +1,7 @@
 import { useAppStore } from '../store/useAppStore';
 import { computeProgress, dailyRates, monthlyRevenue, tagBreakdown } from '../domain/progress';
 import { insights } from '../domain/coach';
+import { computeWeeklyFocus } from '../domain/weekly';
 import { Card, Empty, Progress, SectionTitle, Stat } from '../components/ui';
 import { cx } from '../lib/style';
 import { formatShort, todayISO } from '../lib/date';
@@ -15,6 +16,7 @@ export default function Stats() {
   const months = monthlyRevenue(logs);
   const tags = tagBreakdown(logs);
   const tips = insights(plan, p);
+  const focus = computeWeeklyFocus(profile, plan, logs, today);
 
   const paceLabel = {
     ahead: { t: '先行してる', c: 'text-acid-400' },
@@ -55,6 +57,36 @@ export default function Stats() {
           sub={p.missStreak > 0 ? `直近${p.missStreak}日ゼロ` : '継続中'}
           tone={p.missStreak >= 2 ? 'bad' : 'good'}
         />
+      </div>
+
+      <div className="mt-7">
+        <SectionTitle right={<span className="text-[11px] text-ink-500">第{focus.weekNo}週</span>}>
+          今週のテーマ
+        </SectionTitle>
+        <Card className="border-acid-500/30 bg-acid-500/5">
+          <div className="text-[16px] leading-snug font-extrabold text-acid-400">{focus.theme}</div>
+          <p className="mt-2 text-[13px] leading-relaxed text-ink-300">{focus.why}</p>
+          <div className="mt-3 border-t border-ink-700 pt-2.5">
+            <div className="text-[10.5px] font-extrabold text-ink-400">今週おさえる数字</div>
+            <div className="mt-1 text-[13px] font-bold">{focus.kpi}</div>
+          </div>
+          {focus.lastWeek && (
+            <div className="mt-2.5 flex gap-4 border-t border-ink-700 pt-2.5 text-[11.5px]">
+              <span className="text-ink-400">
+                先週の消化{' '}
+                <span className="font-extrabold text-ink-200">
+                  {Math.round(focus.lastWeek.rate * 100)}%
+                </span>
+              </span>
+              <span className="text-ink-400">
+                先週の収益{' '}
+                <span className="font-extrabold text-ink-200">
+                  {focus.lastWeek.revenue.toLocaleString()}円
+                </span>
+              </span>
+            </div>
+          )}
+        </Card>
       </div>
 
       <div className="mt-7">

@@ -4,6 +4,7 @@ import { computeProgress } from '../domain/progress';
 import { dayReview, morningBriefing } from '../domain/coach';
 import { getPlaybook } from '../domain/playbooks';
 import { PHASE_META, phaseForDate } from '../domain/planner';
+import { computeWeeklyFocus } from '../domain/weekly';
 import { Button, Card, Progress, SectionTitle } from '../components/ui';
 import { cx, inputCls } from '../lib/style';
 import { addDays, formatJP, todayISO } from '../lib/date';
@@ -21,6 +22,7 @@ export default function Today() {
   const [reviewText, setReviewText] = useState<{ headline: string; body: string; tone: string } | null>(
     null,
   );
+  const [weekOpen, setWeekOpen] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [newMin, setNewMin] = useState('30');
 
@@ -39,6 +41,7 @@ export default function Today() {
   const pb = getPlaybook(plan.playbookId);
   const phase = phaseForDate(plan, date);
   const brief = morningBriefing(plan, progress, log.tasks, date);
+  const focus = computeWeeklyFocus(profile, plan, logs, date);
   const done = log.tasks.filter((t) => t.done).length;
   const total = log.tasks.length;
   const totalMin = log.tasks.reduce((a, t) => a + t.estMin, 0);
@@ -79,7 +82,9 @@ export default function Today() {
         <div className="text-center">
           <div className="text-[15px] font-extrabold">{isToday ? '今日' : formatJP(date)}</div>
           <div className="text-[11px] font-bold text-ink-500">
-            フェーズ{phase}・{PHASE_META[phase].name}
+            {progress.planProgress >= 1
+              ? '反復フェーズ・改善サイクル'
+              : `フェーズ${phase}・${PHASE_META[phase].name}`}
           </div>
         </div>
         <button
@@ -114,6 +119,36 @@ export default function Today() {
           {brief.body}
         </p>
       </div>
+
+      {/* 今週のテーマ */}
+      <button
+        onClick={() => setWeekOpen((v) => !v)}
+        className="pressable mt-3 flex w-full items-start gap-2.5 rounded-2xl border border-ink-700 bg-ink-850 px-4 py-3 text-left"
+      >
+        <span className="mt-px shrink-0 rounded-md bg-ink-700 px-2 py-1 text-[10.5px] font-extrabold text-ink-300">
+          第{focus.weekNo}週
+        </span>
+        <span className="min-w-0 flex-1 text-[13.5px] leading-snug font-bold">{focus.theme}</span>
+        <span className="mt-1 shrink-0 text-[11px] font-bold text-ink-500">
+          {weekOpen ? '閉じる' : '詳しく'}
+        </span>
+      </button>
+      {weekOpen && (
+        <div className="animate-rise mt-2 rounded-2xl border border-ink-700 bg-ink-850 px-4 py-3.5">
+          <p className="text-[13px] leading-relaxed text-ink-300">{focus.why}</p>
+          <div className="mt-3 rounded-xl bg-ink-800 px-3 py-2.5">
+            <div className="text-[10.5px] font-extrabold text-ink-400">今週おさえる数字</div>
+            <div className="mt-1 text-[13px] font-bold text-acid-400">{focus.kpi}</div>
+          </div>
+          {focus.lastWeek && (
+            <div className="mt-2.5 text-[11.5px] text-ink-500">
+              先週：{focus.lastWeek.done}/{focus.lastWeek.total}件（
+              {Math.round(focus.lastWeek.rate * 100)}%）・収益{' '}
+              {focus.lastWeek.revenue.toLocaleString()}円
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 今日の進み具合 */}
       <div className="mt-4 card p-4">

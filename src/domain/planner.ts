@@ -1,6 +1,13 @@
 import { getPlaybook } from './playbooks';
 import type { DayLog, PhaseInfo, PhaseNo, Plan, Profile, Task } from '../types';
 import { addDays, clampISO, diffDays, todayISO, weekKey } from '../lib/date';
+import { computeWeeklyFocus, loopState, weeklyReviewTask } from './weekly';
+
+/** 週次レビュータスクの固定ID */
+export const REVIEW_ID = 'weekly-review';
+
+/** 今週のぶんを消化しきった日に出すタスクの固定ID */
+export const CLEAR_ID = 'week-cleared';
 
 export const PHASE_META: Record<PhaseNo, { name: string; goal: string; ratio: number }> = {
   1: { name: '土台づくり', goal: '何で・誰に・いくらで売るかを確定させる', ratio: 0.18 },
@@ -70,13 +77,15 @@ export interface GenerateInput {
 }
 
 /**
- * その日のタスクを生成する。
- * 1. 前日までの未完了タスク（繰越）を最優先
- * 2. 現フェーズのルーティン（週の残回数があるもの）
- * 3. 現フェーズの未消化ステップを順番に
- * を、その日の作業分数の枠に収まるまで詰める。
+ * その日のタスクを生成する。優先順位は上から。
+ * 1. 前日までの未完了タスク（繰越）
+ * 2. 未消化のステップ（計画の背骨。順番を飛ばさない）
+ * 3. 週次レビュー（週の初回稼働日のみ）
+ * 4. ルーティン（週あたりの残回数があるもの）
+ * 5. 改善サイクル（立ち上げ完了後。収益や消化率の状況で出し分ける）
+ * これらを、その日の作業分数の枠に収まるまで詰める。
  */
-export function generateTasks({ plan, date, logs }: GenerateInput): Task[] {
+export function generateTasks({ plan, profile, date, logs }: GenerateInput): Task[] {
   const pb = getPlaybook(plan.playbookId);
   const phase = phaseForDate(plan, date);
   const budget = plan.dailyMinutes;
@@ -149,12 +158,37 @@ export function generateTasks({ plan, date, logs }: GenerateInput): Task[] {
     if (!fits) break; // 分割した日はそこで打ち切る
   }
 
-  // --- 3. ルーティン（残り枠を埋める） ---
   const wk = weekKey(date);
   const counts = plan.routineCounts[wk] ?? {};
+
+  // --- 3. 週次レビュー（週の初回稼働日に1回だけ差し込む） ---
+  const state = loopState(plan, logs, date);
+  const isFirstRunOfWeek = (counts[REVIEW_ID] ?? 0) === 0;
+  const secondWeekOrLater = diffDays(weekKey(plan.phases[0].startDate), wk) >= 7;
+  if (isFirstRunOfWeek && secondWeekOrLater && !already.has(REVIEW_ID) && out.length < 5) {
+    const focus = computeWeeklyFocus(profile, plan, logs, date);
+    const t = weeklyReviewTask(focus);
+    push({
+      date,
+      sourceId: REVIEW_ID,
+      kind: 'review',
+      phase,
+      title: t.title,
+      detail: t.detail,
+      estMin: t.estMin,
+      tag: t.tag,
+    });
+    already.add(REVIEW_ID);
+  }
+
+  // --- 4-5. ルーティンと改善サイクルを交互に配る ---
+  // 順番待ちにすると、重いルーティン（例：記事を1本書く=120分）が枠を食い尽くして
+  // サイクルが永久に出てこない。立ち上げ後は「反復の手」と「改善の手」を1日に混ぜる。
   const pickRoutines = (maxPhase: number) =>
     pb.routines
       .filter((r) => r.phase <= maxPhase)
+      // 立ち上げ作業そのもののルーティンは、立ち上がったら出さない
+      .filter((r) => !(r.untilLaunch && state.launched))
       .filter((r) => (counts[r.id] ?? 0) < r.perWeek)
       .filter((r) => !already.has(r.id))
       // 残回数が多い（＝遅れている）ものを優先
@@ -162,46 +196,86 @@ export function generateTasks({ plan, date, logs }: GenerateInput): Task[] {
   // ステップを前倒しで進めている日は、ルーティンも先のフェーズから引っぱる
   const routines = pickRoutines(phase).length > 0 ? pickRoutines(phase) : pickRoutines(4);
 
-  for (const r of routines) {
-    if (out.length >= 5) break;
-    if (used + r.estMin > budget) continue;
-    push({
-      date,
-      sourceId: r.id,
-      kind: 'routine',
-      phase: r.phase,
-      title: r.title,
-      detail: r.detail,
-      estMin: r.estMin,
-      tag: r.tag,
-    });
-    already.add(r.id);
+  // 立ち上げ完了後だけ、状況に合った改善サイクルを候補に入れる
+  const cycles = state.launched
+    ? pb.cycles
+        .filter((cy) => !already.has(cy.id))
+        .filter((cy) => (counts[cy.id] ?? 0) === 0)
+        .filter((cy) => {
+          if (cy.when === 'always') return true;
+          if (cy.when === 'lowRate') return state.recentRate < 0.5;
+          if (cy.when === 'noRevenue') return state.revenue === 0;
+          return state.revenue > 0;
+        })
+    : [];
+
+  // 手が止まっている日は、軽いものから出して着手のハードルを下げる
+  const ordered =
+    state.recentRate < 0.5 ? [...cycles].sort((a, b) => a.estMin - b.estMin) : cycles;
+
+  type Candidate = { kind: 'routine' | 'cycle'; id: string; title: string; detail: string; estMin: number; tag: string; phase: PhaseNo };
+  const rq: Candidate[] = routines.map((r) => ({
+    kind: 'routine', id: r.id, title: r.title, detail: r.detail, estMin: r.estMin, tag: r.tag, phase: r.phase,
+  }));
+  const cq: Candidate[] = ordered.map((cy) => ({
+    kind: 'cycle', id: cy.id, title: cy.title, detail: cy.detail, estMin: cy.estMin, tag: cy.tag, phase: 4,
+  }));
+
+  // 改善サイクルを先頭に、以降は交互。どちらかが尽きたら残りをそのまま続ける
+  const merged: Candidate[] = [];
+  for (let i = 0; i < Math.max(rq.length, cq.length); i++) {
+    if (cq[i]) merged.push(cq[i]);
+    if (rq[i]) merged.push(rq[i]);
   }
 
-  // --- 何も出せなかった場合のフォールバック ---
+  for (const cand of merged) {
+    if (out.length >= 5) break;
+    if (used + cand.estMin > budget) continue; // 入らないものは飛ばして、入るものを詰める
+    push({
+      date,
+      sourceId: cand.id,
+      kind: cand.kind,
+      phase: cand.phase,
+      title: cand.title,
+      detail: cand.detail,
+      estMin: cand.estMin,
+      tag: cand.tag,
+    });
+    already.add(cand.id);
+  }
+
+  // --- 何も出せなかった場合 ---
+  // 週のぶんを全部やり切った日。無理にタスクをでっち上げない。
   if (out.length === 0) {
-    const r = pb.routines.filter((x) => x.phase <= phase).sort((a, b) => a.estMin - b.estMin)[0];
-    if (r) {
+    const generic = state.launched
+      ? pb.cycles
+          .filter((x) => x.when === 'always')
+          .filter((x) => (counts[x.id] ?? 0) === 0 && !already.has(x.id))
+          .sort((a, b) => a.estMin - b.estMin)[0]
+      : undefined;
+    if (generic) {
       push({
         date,
-        sourceId: r.id,
-        kind: 'routine',
-        phase: r.phase,
-        title: r.title,
-        detail: r.detail,
-        estMin: r.estMin,
-        tag: r.tag,
+        sourceId: generic.id,
+        kind: 'cycle',
+        phase: 4,
+        title: generic.title,
+        detail: generic.detail,
+        estMin: generic.estMin,
+        tag: generic.tag,
       });
     } else {
+      // ここに来る＝今週のぶんを全部やり切った日。無理に作業をでっち上げない。
       push({
         date,
-        sourceId: 'review',
-        kind: 'routine',
+        sourceId: CLEAR_ID,
+        kind: 'review',
         phase,
-        title: '数字を振り返って次の打ち手を1つ決める',
-        detail: '今週の実績を見て、伸ばすところと切るところを1つずつ決める。',
-        estMin: 30,
-        tag: '分析',
+        title: '今週のぶんは終わってる。休むか、前倒しするか決める',
+        detail:
+          '今週やるべきことは全部消化済み。ここで無理に作業を足しても質が落ちるだけ。\n\n休むなら休む、進めるなら「＋追加」で来週やる予定のものを1つ前倒しする——どっちでもいい。決めたらチェックを入れて。\n\n計画は崩れてない。',
+        estMin: 10,
+        tag: '余白',
       });
     }
   }
