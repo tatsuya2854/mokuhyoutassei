@@ -1,0 +1,13 @@
+{
+  "name": "ヤルコト — 今日やることで迷わない",
+  "short_name": "ヤルコト",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#08090c",
+  "theme_color": "#08090c",
+  "lang": "ja",
+  "icons": [
+    { "src": "./favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

@@ -1,0 +1,120 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-ink-950: #08090c;
+  --color-ink-900: #0c0e12;
+  --color-ink-850: #121419;
+  --color-ink-800: #171a20;
+  --color-ink-700: #21252d;
+  --color-ink-600: #2e333d;
+  --color-ink-500: #434a57;
+  --color-ink-400: #6b7280;
+  --color-ink-300: #949bab;
+  --color-ink-200: #c4cad6;
+  --color-ink-100: #e8ebf1;
+
+  --color-acid-400: #45e0a0;
+  --color-acid-500: #22c98a;
+  --color-acid-600: #16a572;
+
+  --color-flame-400: #ff7a5c;
+  --color-flame-500: #f9603d;
+
+  --color-amberx-400: #f6c453;
+
+  --font-sans:
+    'Hiragino Sans', 'Hiragino Kaku Gothic ProN', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+    Roboto, 'Noto Sans JP', sans-serif;
+
+  --radius-xl2: 1.25rem;
+}
+
+:root {
+  color-scheme: dark;
+  --safe-b: env(safe-area-inset-bottom, 0px);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-ink-950);
+  color: var(--color-ink-100);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior-y: none;
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+input,
+textarea,
+select,
+button {
+  font-family: inherit;
+}
+
+/* 入力欄のズーム防止（iOS）: 16px以上を保証 */
+input,
+textarea,
+select {
+  font-size: 16px;
+}
+
+::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes pop {
+  0% {
+    transform: scale(0.85);
+  }
+  60% {
+    transform: scale(1.08);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.animate-rise {
+  animation: rise 0.35s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}
+.animate-pop {
+  animation: pop 0.3s cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+
+@utility card {
+  background: var(--color-ink-850);
+  border: 1px solid var(--color-ink-700);
+  border-radius: var(--radius-xl2);
+}
+
+@utility pressable {
+  transition:
+    transform 0.12s ease,
+    opacity 0.12s ease,
+    background-color 0.15s ease,
+    border-color 0.15s ease;
+}
+.pressable:active {
+  transform: scale(0.975);
+}
