@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { decide, decideWith, expectedAt, requiredMonthly, scorePlaybook } from './decide';
 import { PLAYBOOKS, getPlaybook } from './playbooks';
-import { buildPlan, computeDailyMinutes, generateTasks, phaseForDate } from './planner';
+import { REVIEW_ID, buildPlan, computeDailyMinutes, generateTasks, phaseForDate } from './planner';
+import { computeWeeklyFocus, loopState } from './weekly';
+import { CLEAR_ID } from './planner';
 import { closeDay, computeAdjustment } from './adjust';
 import { computeProgress, dailyRates, monthlyRevenue, tagBreakdown } from './progress';
 import { dayReview, insights, morningBriefing } from './coach';
@@ -339,7 +341,7 @@ describe('計画分解', () => {
     expect(tasks.some((t) => t.phase > 1)).toBe(true);
   });
 
-  it('全ステップ消化後もルーティンで毎日が埋まる', () => {
+  it('全ステップ消化後もルーティンと改善サイクルで毎日が埋まる', () => {
     const prof = p();
     const pb = getPlaybook('sns-agency');
     const plan: Plan = {
@@ -348,8 +350,9 @@ describe('計画分解', () => {
     };
     const tasks = generateTasks({ plan, profile: prof, date: base.startDate, logs: {} });
     expect(tasks.length).toBeGreaterThan(0);
-    expect(tasks.every((t) => t.kind === 'routine')).toBe(true);
-    expect(tasks.some((t) => t.sourceId !== 'review')).toBe(true);
+    expect(tasks.every((t) => t.kind === 'routine' || t.kind === 'cycle')).toBe(true);
+    // 「振り返るだけの日」で埋まらない
+    expect(tasks.some((t) => t.sourceId !== 'fallback-review')).toBe(true);
   });
 
   it('タスク総量が1日の枠から極端に外れない', () => {
@@ -588,6 +591,353 @@ describe('上司の発話', () => {
     const pr = computeProgress(prof, plan, {}, '2026-10-05');
     expect(insights(plan, pr).length).toBeGreaterThan(0);
     expect(insights(plan, { ...pr, allTasks: 50, recentRate: 0.2 }).length).toBeGreaterThan(0);
+  });
+});
+
+/* ------------------------ 立ち上げ後の反復フェーズ ------------------------ */
+describe('改善サイクル', () => {
+  const launched = (id: string, prof = p()): Plan => ({
+    ...buildPlan(prof, id),
+    consumedStepIds: getPlaybook(id).steps.map((s) => s.id),
+  });
+
+  const logsWith = (revenue: number, date = base.startDate): Record<string, DayLog> => ({
+    [addDays(date, -1)]: {
+      date: addDays(date, -1),
+      closed: true,
+      revenue,
+      tasks: [
+        {
+          id: 'x', date: addDays(date, -1), sourceId: 'x', kind: 'routine', phase: 1,
+          title: 't', detail: '', estMin: 30, tag: 'x', done: true,
+        },
+      ],
+    },
+  });
+
+  it('全プレイブックが改善サイクルを持っている', () => {
+    for (const pb of PLAYBOOKS) {
+      expect(pb.cycles.length, pb.id).toBeGreaterThanOrEqual(5);
+      const ids = pb.cycles.map((c) => c.id);
+      expect(new Set(ids).size).toBe(ids.length);
+      // 状況に依存しない汎用サイクルが必ずある（何も当てはまらない日を作らない）
+      expect(pb.cycles.some((c) => c.when === 'always')).toBe(true);
+      for (const c of pb.cycles) {
+        expect(c.estMin).toBeGreaterThanOrEqual(15);
+        expect(c.estMin).toBeLessThanOrEqual(180);
+        expect(c.detail.length).toBeGreaterThan(10);
+      }
+    }
+  });
+
+  it('ステップIDとサイクルIDが衝突しない', () => {
+    for (const pb of PLAYBOOKS) {
+      const ids = [
+        ...pb.steps.map((s) => s.id),
+        ...pb.routines.map((r) => r.id),
+        ...pb.cycles.map((c) => c.id),
+      ];
+      expect(new Set(ids).size, pb.id).toBe(ids.length);
+    }
+  });
+
+  it('立ち上げ前はサイクルが出ない', () => {
+    const tasks = generateTasks({
+      plan: buildPlan(p(), 'content-seo'),
+      profile: p(),
+      date: base.startDate,
+      logs: {},
+    });
+    expect(tasks.some((t) => t.kind === 'cycle')).toBe(false);
+  });
+
+  it('立ち上げ後はサイクルで日が埋まる（同じ4件の無限ループにならない）', () => {
+    const plan = launched('content-seo');
+    const tasks = generateTasks({ plan, profile: p(), date: base.startDate, logs: {} });
+    expect(tasks.length).toBeGreaterThan(0);
+    expect(tasks.some((t) => t.kind === 'cycle')).toBe(true);
+  });
+
+  it('収益ゼロなら「売る量を増やす」系、収益ありなら「単価・仕組み」系が出る', () => {
+    const plan = launched('content-seo');
+    const pb = getPlaybook('content-seo');
+    const noRev = generateTasks({ plan, profile: p(), date: base.startDate, logs: {} });
+    const hasRev = generateTasks({
+      plan, profile: p(), date: base.startDate, logs: logsWith(50000),
+    });
+    const kindOf = (ts: typeof noRev) =>
+      ts.filter((t) => t.kind === 'cycle').map((t) => pb.cycles.find((c) => c.id === t.sourceId)?.when);
+    expect(kindOf(noRev)).not.toContain('hasRevenue');
+    expect(kindOf(hasRev)).not.toContain('noRevenue');
+    expect(kindOf(hasRev).length).toBeGreaterThan(0);
+  });
+
+  it('同じサイクルは同じ週に2回出ない', () => {
+    const prof = p();
+    let plan = launched('content-seo', prof);
+    const logs: Record<string, DayLog> = {};
+    const seen: string[] = [];
+    // 月曜から金曜まで
+    for (const date of rangeDays('2026-10-05', '2026-10-09')) {
+      const tasks = generateTasks({ plan, profile: prof, date, logs });
+      for (const t of tasks) if (t.kind === 'cycle') seen.push(t.sourceId);
+      const log: DayLog = { date, closed: true, tasks: tasks.map((t) => ({ ...t, done: true })) };
+      logs[date] = log;
+      plan = closeDay(plan, log);
+    }
+    expect(new Set(seen).size).toBe(seen.length);
+  });
+
+  it('週が変わるとサイクルがまた回ってくる', () => {
+    const prof = p();
+    let plan = launched('content-seo', prof);
+    const logs: Record<string, DayLog> = {};
+    const byWeek: Record<string, string[]> = {};
+    for (const date of rangeDays('2026-10-05', '2026-10-16')) {
+      const tasks = generateTasks({ plan, profile: prof, date, logs });
+      const wk = weekKey(date);
+      byWeek[wk] = [...(byWeek[wk] ?? []), ...tasks.filter((t) => t.kind === 'cycle').map((t) => t.sourceId)];
+      const log: DayLog = { date, closed: true, tasks: tasks.map((t) => ({ ...t, done: true })) };
+      logs[date] = log;
+      plan = closeDay(plan, log);
+    }
+    const weeks = Object.keys(byWeek).filter((w) => byWeek[w].length > 0);
+    expect(weeks.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('スランプ明け（繰越は消えたが消化率が低い）は軽いサイクルから出る', () => {
+    const prof = p();
+    const plan = launched('content-seo', prof);
+    const logs: Record<string, DayLog> = {};
+    const mk = (d: string, n: number, done: boolean) => ({
+      date: d,
+      closed: true,
+      tasks: Array.from({ length: n }, (_, j) => ({
+        id: `${d}-${j}`, date: d, sourceId: `s${d}${j}`, kind: 'routine' as const,
+        phase: 1 as const, title: 't', detail: '', estMin: 30, tag: 'x', done,
+      })),
+    });
+    // 5〜7日前は全滅、直近4日は完走（＝繰越は無いが7日の消化率は低い）
+    for (const i of [7, 6, 5]) logs[addDays(base.startDate, -i)] = mk(addDays(base.startDate, -i), 3, false);
+    for (const i of [4, 3, 2, 1]) logs[addDays(base.startDate, -i)] = mk(addDays(base.startDate, -i), 1, true);
+
+    const tasks = generateTasks({ plan, profile: prof, date: base.startDate, logs });
+    expect(tasks.some((t) => t.carriedFrom)).toBe(false);
+    const cycles = tasks.filter((t) => t.kind === 'cycle');
+    expect(cycles.length).toBeGreaterThan(0);
+    // 出てくる順が軽い順になっている
+    const mins = cycles.map((c) => c.estMin);
+    expect(mins).toEqual([...mins].sort((a, b) => a - b));
+    // 「止まったとき用」の軽いサイクルが候補に入る
+    const pb = getPlaybook('content-seo');
+    const lowOnes = pb.cycles.filter((c) => c.when === 'lowRate').map((c) => c.id);
+    expect(tasks.some((t) => lowOnes.includes(t.sourceId))).toBe(true);
+  });
+});
+
+describe('反復フェーズの誠実さ', () => {
+  it('立ち上げ作業そのもののルーティンは、立ち上がったら出さない', () => {
+    const prof = p();
+    const pb = getPlaybook('digital-product');
+    const untilLaunch = pb.routines.filter((r) => r.untilLaunch).map((r) => r.id);
+    expect(untilLaunch.length).toBeGreaterThan(0);
+    const plan: Plan = {
+      ...buildPlan(prof, 'digital-product'),
+      consumedStepIds: pb.steps.map((x) => x.id),
+    };
+    const tasks = generateTasks({ plan, profile: prof, date: base.startDate, logs: {} });
+    for (const id of untilLaunch) expect(tasks.map((t) => t.sourceId)).not.toContain(id);
+  });
+
+  it('週のぶんを消化しきった日は、作業をでっち上げず正直に伝える', () => {
+    const prof = p();
+    const pb = getPlaybook('content-seo');
+    const wk = weekKey(base.startDate);
+    const full: Record<string, number> = {};
+    for (const r of pb.routines) full[r.id] = r.perWeek;
+    for (const c of pb.cycles) full[c.id] = 1;
+    full[REVIEW_ID] = 1;
+    const plan: Plan = {
+      ...buildPlan(prof, 'content-seo'),
+      consumedStepIds: pb.steps.map((x) => x.id),
+      routineCounts: { [wk]: full },
+    };
+    const tasks = generateTasks({ plan, profile: prof, date: base.startDate, logs: {} });
+    expect(tasks.length).toBe(1);
+    expect(tasks[0].sourceId).toBe(CLEAR_ID);
+    expect(tasks[0].title).toContain('今週のぶんは終わってる');
+  });
+
+  it('180日回しても同じタスクが週の上限を超えて出ない', () => {
+    const prof = p({ deadline: addDays(base.startDate, 180) });
+    const pb = getPlaybook('content-seo');
+    let plan = buildPlan(prof, 'content-seo');
+    const logs: Record<string, DayLog> = {};
+    const perWeek: Record<string, Record<string, number>> = {};
+    for (const date of rangeDays(prof.startDate, prof.deadline)) {
+      const tasks = generateTasks({ plan, profile: prof, date, logs });
+      const wk = weekKey(date);
+      perWeek[wk] ??= {};
+      for (const t of tasks) perWeek[wk][t.sourceId] = (perWeek[wk][t.sourceId] ?? 0) + 1;
+      const log: DayLog = { date, closed: true, tasks: tasks.map((t) => ({ ...t, done: true })) };
+      logs[date] = log;
+      plan = closeDay(plan, log);
+    }
+    for (const [, counts] of Object.entries(perWeek)) {
+      for (const [id, n] of Object.entries(counts)) {
+        if (id === CLEAR_ID) continue; // 空いた日ぶんだけ出る
+        const r = pb.routines.find((x) => x.id === id);
+        const c = pb.cycles.find((x) => x.id === id);
+        if (r) expect(n, `${id}`).toBeLessThanOrEqual(r.perWeek);
+        if (c) expect(n, `${id}`).toBeLessThanOrEqual(1);
+        if (id === REVIEW_ID) expect(n).toBeLessThanOrEqual(1);
+      }
+    }
+  });
+
+  it('立ち上げ後も指示が散る（ルーティンの繰り返しに戻らない）', () => {
+    const prof = p({ deadline: addDays(base.startDate, 180) });
+    for (const pb of PLAYBOOKS) {
+      let plan = buildPlan(prof, pb.id);
+      const logs: Record<string, DayLog> = {};
+      const titles: string[] = [];
+      rangeDays(prof.startDate, prof.deadline).forEach((date, i) => {
+        const tasks = generateTasks({ plan, profile: prof, date, logs });
+        if (plan.consumedStepIds.length >= pb.steps.length) tasks.forEach((t) => titles.push(t.title));
+        const log: DayLog = {
+          date, closed: true,
+          tasks: tasks.map((t) => ({ ...t, done: true })),
+          revenue: i > 40 && i % 7 === 0 ? 20000 : undefined,
+        };
+        logs[date] = log;
+        plan = closeDay(plan, log);
+      });
+      const kinds = new Set(titles).size;
+      // ルーティンだけの無限ループに戻っていないこと（改善サイクルが実際に効いている）
+      expect(kinds, pb.id).toBeGreaterThan(pb.routines.length + 2);
+      expect(kinds, pb.id).toBeGreaterThanOrEqual(8);
+    }
+  });
+});
+
+describe('週次レビューとテーマ', () => {
+  it('初週には振り返りを出さない（振り返る対象がない）', () => {
+    const tasks = generateTasks({
+      plan: buildPlan(p(), 'content-seo'), profile: p(), date: base.startDate, logs: {},
+    });
+    expect(tasks.some((t) => t.sourceId === REVIEW_ID)).toBe(false);
+  });
+
+  it('2週目以降は週に1回だけ振り返りが入る', () => {
+    const prof = p();
+    let plan = buildPlan(prof, 'content-seo');
+    const logs: Record<string, DayLog> = {};
+    const reviewDays: string[] = [];
+    for (const date of rangeDays(base.startDate, addDays(base.startDate, 20))) {
+      const tasks = generateTasks({ plan, profile: prof, date, logs });
+      if (tasks.some((t) => t.sourceId === REVIEW_ID)) reviewDays.push(date);
+      const log: DayLog = { date, closed: true, tasks: tasks.map((t) => ({ ...t, done: true })) };
+      logs[date] = log;
+      plan = closeDay(plan, log);
+    }
+    expect(reviewDays.length).toBeGreaterThanOrEqual(2);
+    // 同じ週に2回入らない
+    expect(new Set(reviewDays.map(weekKey)).size).toBe(reviewDays.length);
+  });
+
+  it('振り返りタスクに今週のテーマと先週の数字が入る', () => {
+    const prof = p();
+    const plan = buildPlan(prof, 'content-seo');
+    const date = addDays(base.startDate, 8);
+    const logs: Record<string, DayLog> = {
+      [addDays(base.startDate, 1)]: {
+        date: addDays(base.startDate, 1), closed: true, revenue: 3000,
+        tasks: [{ id: 'z', date: addDays(base.startDate, 1), sourceId: 'z', kind: 'routine', phase: 1, title: 't', detail: '', estMin: 30, tag: 'x', done: true }],
+      },
+    };
+    const tasks = generateTasks({ plan, profile: prof, date, logs });
+    const rv = tasks.find((t) => t.sourceId === REVIEW_ID);
+    expect(rv).toBeDefined();
+    expect(rv!.detail).toContain('今週のテーマ');
+    expect(rv!.detail).toContain('先週');
+  });
+
+  it('状況に応じてテーマが変わる', () => {
+    const prof = p();
+    const pbId = 'content-seo';
+    const fresh = buildPlan(prof, pbId);
+    const launchedPlan: Plan = {
+      ...fresh,
+      consumedStepIds: getPlaybook(pbId).steps.map((s) => s.id),
+    };
+    const d = addDays(base.startDate, 10);
+
+    // 立ち上げ前 → 土台/立ち上げ
+    expect(['start', 'build']).toContain(computeWeeklyFocus(prof, fresh, {}, d).id);
+
+    // 立ち上げ済み・収益ゼロ → 売る量
+    expect(computeWeeklyFocus(prof, launchedPlan, {}, d).id).toBe('sell');
+
+    // 収益はあるが必要額に遠い → 勝ち筋の特定
+    const some: Record<string, DayLog> = {
+      [addDays(d, -3)]: { date: addDays(d, -3), closed: true, revenue: 10000, tasks: [] },
+    };
+    expect(computeWeeklyFocus(prof, launchedPlan, some, d).id).toBe('convert');
+
+    // 必要額に近い → 単価 or 件数
+    const near: Record<string, DayLog> = {
+      [addDays(d, -3)]: { date: addDays(d, -3), closed: true, revenue: 70000, tasks: [] },
+    };
+    expect(computeWeeklyFocus(prof, launchedPlan, near, d).id).toBe('raise');
+
+    // 達成 → 仕組み化
+    const over: Record<string, DayLog> = {
+      [addDays(d, -3)]: { date: addDays(d, -3), closed: true, revenue: 150000, tasks: [] },
+    };
+    expect(computeWeeklyFocus(prof, launchedPlan, over, d).id).toBe('systemize');
+  });
+
+  it('手が止まっている週は、何より先に「量を絞る」テーマになる', () => {
+    const prof = p();
+    const plan = buildPlan(prof, 'content-seo');
+    const d = '2026-10-12'; // 月曜
+    const logs: Record<string, DayLog> = {};
+    for (const date of rangeDays('2026-10-05', '2026-10-11')) {
+      logs[date] = {
+        date, closed: true,
+        tasks: [1, 2].map((n) => ({
+          id: `${date}-${n}`, date, sourceId: `s${n}`, kind: 'routine' as const, phase: 1 as const,
+          title: 't', detail: '', estMin: 30, tag: 'x', done: false,
+        })),
+      };
+    }
+    const f = computeWeeklyFocus(prof, plan, logs, d);
+    expect(f.id).toBe('recover');
+    expect(f.kpi).toContain('ゼロの日');
+  });
+
+  it('週番号が開始日から数えて正しい', () => {
+    const prof = p({ startDate: '2026-10-01' });
+    const plan = buildPlan(prof, 'content-seo');
+    expect(computeWeeklyFocus(prof, plan, {}, '2026-10-01').weekNo).toBe(1);
+    expect(computeWeeklyFocus(prof, plan, {}, '2026-10-04').weekNo).toBe(1); // 同じ週の日曜
+    expect(computeWeeklyFocus(prof, plan, {}, '2026-10-05').weekNo).toBe(2); // 次の月曜
+    expect(computeWeeklyFocus(prof, plan, {}, '2026-10-19').weekNo).toBe(4);
+  });
+
+  it('loopState が立ち上げ完了と収益を正しく読む', () => {
+    const prof = p();
+    const pb = getPlaybook('content-seo');
+    const fresh = buildPlan(prof, 'content-seo');
+    expect(loopState(fresh, {}, base.startDate).launched).toBe(false);
+    const done: Plan = { ...fresh, consumedStepIds: pb.steps.map((s) => s.id) };
+    expect(loopState(done, {}, base.startDate).launched).toBe(true);
+    const logs: Record<string, DayLog> = {
+      [addDays(base.startDate, -1)]: { date: addDays(base.startDate, -1), closed: true, revenue: 5000, tasks: [] },
+      // 未来の収益は数えない
+      [addDays(base.startDate, 5)]: { date: addDays(base.startDate, 5), closed: true, revenue: 99999, tasks: [] },
+    };
+    expect(loopState(done, logs, base.startDate).revenue).toBe(5000);
   });
 });
 
