@@ -1,8 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { decide, decideWith, expectedAt, requiredMonthly, scorePlaybook } from './decide';
 import { PLAYBOOKS, getPlaybook } from './playbooks';
-import { REVIEW_ID, buildPlan, computeDailyMinutes, generateTasks, phaseForDate } from './planner';
+import {
+  REVIEW_ID,
+  buildPlan,
+  computeDailyMinutes,
+  exploreDaysLeft,
+  generateTasks,
+  isExploring,
+  phaseForDate,
+} from './planner';
 import { computeWeeklyFocus, loopState } from './weekly';
+import { ANXIETIES, ANXIETY_MAP, GOAL_KINDS, filterByGoal, goalKindOf } from './goals';
 import { CLEAR_ID } from './planner';
 import { closeDay, computeAdjustment } from './adjust';
 import { computeProgress, dailyRates, monthlyRevenue, tagBreakdown } from './progress';
@@ -11,6 +20,8 @@ import { addDays, diffDays, formatJP, rangeDays, toISO, weekKey } from '../lib/d
 import type { DayLog, Plan, Profile } from '../types';
 
 const base: Profile = {
+  anxiety: 'money',
+  goalKind: 'money',
   goalAmount: 100000,
   goalMode: 'monthly',
   deadline: '2026-12-31',
@@ -554,8 +565,8 @@ describe('上司の発話', () => {
   it('同じ日・同じ状況なら同じことを言う（ブレない）', () => {
     const pr = computeProgress(prof, plan, {}, '2026-10-05');
     const tasks = generateTasks({ plan, profile: prof, date: '2026-10-05', logs: {} });
-    const a = morningBriefing(plan, pr, tasks, '2026-10-05');
-    const b = morningBriefing(plan, pr, tasks, '2026-10-05');
+    const a = morningBriefing(prof, plan, pr, tasks, '2026-10-05');
+    const b = morningBriefing(prof, plan, pr, tasks, '2026-10-05');
     expect(a).toEqual(b);
   });
 
@@ -563,7 +574,7 @@ describe('上司の発話', () => {
     const pr = computeProgress(prof, plan, {}, '2026-10-05');
     const stalled = { ...pr, pace: 'stalled' as const, missStreak: 4 };
     const tasks = generateTasks({ plan, profile: prof, date: '2026-10-05', logs: {} });
-    const m = morningBriefing(plan, stalled, tasks, '2026-10-05');
+    const m = morningBriefing(prof, plan, stalled, tasks, '2026-10-05');
     expect(m.tone).toBe('warn');
     expect(m.body).toContain('4日');
   });
@@ -577,20 +588,20 @@ describe('上司の発話', () => {
         { id: '1', date: '2026-10-05', sourceId: 'a', kind: 'step', phase: 1, title: '', detail: '', estMin: 30, tag: '', done },
       ],
     });
-    expect(dayReview(mk(true), pr, 'keep').tone).toBe('praise');
-    expect(dayReview(mk(false), pr, 'keep').tone).toBe('warn');
+    expect(dayReview(prof, mk(true), pr, 'keep').tone).toBe('praise');
+    expect(dayReview(prof, mk(false), pr, 'keep').tone).toBe('warn');
   });
 
   it('締めのフィードバックに翌日の調整理由が入る', () => {
     const pr = computeProgress(prof, plan, {}, '2026-10-05');
     const log: DayLog = { date: '2026-10-05', closed: true, tasks: [] };
-    expect(dayReview(log, pr, 'テスト理由').body).toContain('テスト理由');
+    expect(dayReview(prof, log, pr, 'テスト理由').body).toContain('テスト理由');
   });
 
   it('示唆は必ず1件以上返る', () => {
     const pr = computeProgress(prof, plan, {}, '2026-10-05');
-    expect(insights(plan, pr).length).toBeGreaterThan(0);
-    expect(insights(plan, { ...pr, allTasks: 50, recentRate: 0.2 }).length).toBeGreaterThan(0);
+    expect(insights(prof, plan, pr).length).toBeGreaterThan(0);
+    expect(insights(prof, plan, { ...pr, allTasks: 50, recentRate: 0.2 }).length).toBeGreaterThan(0);
   });
 });
 
@@ -929,15 +940,295 @@ describe('週次レビューとテーマ', () => {
     const prof = p();
     const pb = getPlaybook('content-seo');
     const fresh = buildPlan(prof, 'content-seo');
-    expect(loopState(fresh, {}, base.startDate).launched).toBe(false);
+    expect(loopState(prof, fresh, {}, base.startDate).launched).toBe(false);
     const done: Plan = { ...fresh, consumedStepIds: pb.steps.map((s) => s.id) };
-    expect(loopState(done, {}, base.startDate).launched).toBe(true);
+    expect(loopState(prof, done, {}, base.startDate).launched).toBe(true);
     const logs: Record<string, DayLog> = {
       [addDays(base.startDate, -1)]: { date: addDays(base.startDate, -1), closed: true, revenue: 5000, tasks: [] },
       // 未来の収益は数えない
       [addDays(base.startDate, 5)]: { date: addDays(base.startDate, 5), closed: true, revenue: 99999, tasks: [] },
     };
-    expect(loopState(done, logs, base.startDate).revenue).toBe(5000);
+    expect(loopState(prof, done, logs, base.startDate).revenue).toBe(5000);
+  });
+});
+
+/* ------------------------ 不安 → 目標タイプ ------------------------ */
+describe('不安から目標への翻訳', () => {
+  it('全ての不安が目標タイプに紐づいている', () => {
+    expect(ANXIETIES.length).toBeGreaterThanOrEqual(5);
+    for (const a of ANXIETIES) {
+      expect(GOAL_KINDS[a.goalKind], a.id).toBeDefined();
+      expect(a.voice.length).toBeGreaterThan(10);
+      expect(ANXIETY_MAP[a.id]).toBe(a);
+    }
+    // お金以外の逃げ道が必ず用意されている
+    expect(new Set(ANXIETIES.map((a) => a.goalKind)).size).toBeGreaterThanOrEqual(4);
+  });
+
+  it('目標タイプの定義が揃っている', () => {
+    for (const k of Object.values(GOAL_KINDS)) {
+      expect(k.presets.length).toBeGreaterThan(0);
+      expect(k.presets.some((x) => x.value === k.defaultValue) || k.defaultValue > 0).toBe(true);
+      expect(k.headline.length).toBeGreaterThan(3);
+      expect(k.format(k.defaultValue, true).length).toBeGreaterThan(2);
+      const sum = Object.values(k.weights).reduce((a, b) => a + b, 0);
+      expect(sum).toBeGreaterThan(80);
+    }
+    // お金以外は reach（収益の到達見込み）を使わない
+    for (const id of ['proof', 'skill', 'habit', 'explore'] as const) {
+      expect(GOAL_KINDS[id].weights.reach).toBe(0);
+    }
+  });
+
+  it('お金以外の目標では requiredMonthly が 0 になる', () => {
+    expect(requiredMonthly(p({ goalKind: 'proof', goalAmount: 3 }))).toBe(0);
+    expect(requiredMonthly(p({ goalKind: 'habit', goalAmount: 30 }))).toBe(0);
+    expect(requiredMonthly(p({ goalKind: 'money' }))).toBe(100000);
+  });
+
+  it('目標タイプで選ばれる手段が変わる', () => {
+    const money = decide(p({ goalKind: 'money', skills: ['writing', 'sns'] }));
+    const skill = decide(p({ goalKind: 'skill', goalAmount: 1, skills: ['writing', 'sns'] }));
+    expect(money.playbookId).toBeTruthy();
+    expect(skill.playbookId).toBeTruthy();
+    // スキル目的では「売る」より「作る」比率の高い手段が上がる
+    const ms = scorePlaybook(getPlaybook(money.playbookId), p({ goalKind: 'skill' }));
+    const ss = scorePlaybook(getPlaybook(skill.playbookId), p({ goalKind: 'skill' }));
+    expect(ss.score).toBeGreaterThanOrEqual(ms.score);
+  });
+});
+
+describe('目標タイプによるタスクの絞り込み', () => {
+  const sell = ['営業', '販売', '出品', '仕入', '運用', '実施'];
+
+  it('実績づくりの目標では営業・販売タスクを出さない', () => {
+    const prof = p({ goalKind: 'proof', goalAmount: 3, skills: ['design'] });
+    const d = decide(prof);
+    let plan = buildPlan(prof, d.playbookId);
+    const logs: Record<string, DayLog> = {};
+    const seen: string[] = [];
+    for (const date of rangeDays(prof.startDate, addDays(prof.startDate, 45))) {
+      const tasks = generateTasks({ plan, profile: prof, date, logs });
+      tasks.forEach((t) => seen.push(t.tag));
+      const log: DayLog = { date, closed: true, tasks: tasks.map((t) => ({ ...t, done: true })) };
+      logs[date] = log;
+      plan = closeDay(plan, log);
+    }
+    expect(seen.length).toBeGreaterThan(10);
+    for (const tag of sell) expect(seen, tag).not.toContain(tag);
+  });
+
+  it('お金の目標では営業タスクが出る', () => {
+    const prof = p({ goalKind: 'money', skills: ['writing'] });
+    const d = decide(prof);
+    let plan = buildPlan(prof, d.playbookId);
+    const logs: Record<string, DayLog> = {};
+    const seen: string[] = [];
+    for (const date of rangeDays(prof.startDate, addDays(prof.startDate, 45))) {
+      const tasks = generateTasks({ plan, profile: prof, date, logs });
+      tasks.forEach((t) => seen.push(t.tag));
+      const log: DayLog = { date, closed: true, tasks: tasks.map((t) => ({ ...t, done: true })) };
+      logs[date] = log;
+      plan = closeDay(plan, log);
+    }
+    expect(seen.some((t) => sell.includes(t))).toBe(true);
+  });
+
+  it('絞り込んでもタスクが枯れない（全目標タイプ × 全手段）', () => {
+    for (const kindId of ['money', 'proof', 'skill', 'habit'] as const) {
+      for (const pb of PLAYBOOKS) {
+        const prof = p({ goalKind: kindId, goalAmount: kindId === 'money' ? 100000 : 3 });
+        let plan = buildPlan(prof, pb.id);
+        const logs: Record<string, DayLog> = {};
+        for (const date of rangeDays(prof.startDate, addDays(prof.startDate, 30))) {
+          const tasks = generateTasks({ plan, profile: prof, date, logs });
+          expect(tasks.length, `${kindId}/${pb.id}/${date}`).toBeGreaterThan(0);
+          const log: DayLog = { date, closed: true, tasks: tasks.map((t) => ({ ...t, done: true })) };
+          logs[date] = log;
+          plan = closeDay(plan, log);
+        }
+      }
+    }
+  });
+
+  it('絞り込みで候補がゼロになる場合は絞らない（安全弁）', () => {
+    const kind = GOAL_KINDS.skill;
+    const onlySales = [{ tag: '営業' }, { tag: '販売' }];
+    expect(filterByGoal(onlySales, kind)).toEqual(onlySales);
+    const mixed = [{ tag: '営業' }, { tag: '制作' }];
+    expect(filterByGoal(mixed, kind)).toEqual([{ tag: '制作' }]);
+  });
+
+  it('絞り込んだ分は「立ち上げ完了」の分母からも外れる', () => {
+    const prof = p({ goalKind: 'skill', goalAmount: 1 });
+    const pb = getPlaybook('web-freelance');
+    const eligible = filterByGoal(pb.steps, goalKindOf(prof));
+    expect(eligible.length).toBeLessThan(pb.steps.length);
+    const plan: Plan = {
+      ...buildPlan(prof, 'web-freelance'),
+      consumedStepIds: eligible.map((s) => s.id),
+    };
+    // 出さないステップが残っていても launched になる
+    expect(loopState(prof, plan, {}, base.startDate).launched).toBe(true);
+    expect(computeProgress(prof, plan, {}, base.startDate).planProgress).toBe(1);
+  });
+});
+
+describe('探索モード', () => {
+  const prof = () => p({ goalKind: 'explore', goalAmount: 3, skills: ['writing'] });
+
+  it('決め切らずに複数の手段を返す', () => {
+    const d = decide(prof());
+    expect(d.exploreIds?.length).toBe(3);
+    expect(d.exploreIds?.[0]).toBe(d.playbookId);
+    expect(new Set(d.exploreIds).size).toBe(3);
+    expect(d.verdict).toContain('2週間');
+    expect(d.requiredMonthly).toBe(0);
+  });
+
+  it('やりたくないことに触れる手段は探索候補にも入らない', () => {
+    const d = decide(p({ goalKind: 'explore', goalAmount: 3, avoid: ['stock', 'sales'] }));
+    for (const id of d.exploreIds ?? []) {
+      const pb = getPlaybook(id);
+      for (const t of pb.traits) expect(['stock', 'sales']).not.toContain(t);
+    }
+  });
+
+  it('探索中は複数手段の土台タスクが混ざり、手段名が付く', () => {
+    const prf = prof();
+    const d = decide(prf);
+    const plan = buildPlan(prf, d.playbookId, d.exploreIds);
+    const names = new Set<string>();
+    const logs: Record<string, DayLog> = {};
+    let pl = plan;
+    for (const date of rangeDays(prf.startDate, addDays(prf.startDate, 6))) {
+      const tasks = generateTasks({ plan: pl, profile: prf, date, logs });
+      for (const t of tasks) {
+        const m = t.title.match(/^【(.+?)】/);
+        if (m) names.add(m[1]);
+      }
+      const log: DayLog = { date, closed: true, tasks: tasks.map((t) => ({ ...t, done: true })) };
+      logs[date] = log;
+      pl = closeDay(pl, log);
+    }
+    expect(names.size).toBeGreaterThanOrEqual(2);
+  });
+
+  it('探索中は反復タスクを出さない（試すことに集中させる）', () => {
+    const prf = prof();
+    const d = decide(prf);
+    const plan = buildPlan(prf, d.playbookId, d.exploreIds);
+    const tasks = generateTasks({ plan, profile: prf, date: prf.startDate, logs: {} });
+    expect(tasks.length).toBeGreaterThan(0);
+    expect(tasks.every((t) => t.kind === 'step')).toBe(true);
+  });
+
+  it('14日で探索期間が終わる', () => {
+    const prf = prof();
+    const d = decide(prf);
+    const plan = buildPlan(prf, d.playbookId, d.exploreIds);
+    expect(isExploring(plan, prf.startDate)).toBe(true);
+    expect(isExploring(plan, addDays(prf.startDate, 13))).toBe(true);
+    expect(isExploring(plan, addDays(prf.startDate, 14))).toBe(false);
+    expect(exploreDaysLeft(plan, prf.startDate)).toBe(14);
+    expect(exploreDaysLeft(plan, addDays(prf.startDate, 20))).toBe(0);
+  });
+
+  it('手段を1つに確定すると探索は終わる', () => {
+    const prf = prof();
+    const plan = buildPlan(prf, 'content-seo');
+    expect(isExploring(plan, prf.startDate)).toBe(false);
+  });
+});
+
+describe('目標タイプ別のフェーズと週テーマ', () => {
+  it('フェーズ名が目標タイプで変わる（売る前提の言葉を出さない）', () => {
+    const money = buildPlan(p({ goalKind: 'money' }), 'content-seo');
+    const proof = buildPlan(p({ goalKind: 'proof', goalAmount: 3 }), 'content-seo');
+    const habit = buildPlan(p({ goalKind: 'habit', goalAmount: 30 }), 'content-seo');
+    expect(money.phases[0].goal).toContain('売る');
+    expect(proof.phases.map((x) => x.goal).join('')).not.toContain('いくらで売る');
+    expect(habit.phases.map((x) => x.goal).join('')).not.toContain('いくらで売る');
+    // フェーズは常に4つで、期間を覆う
+    for (const pl of [money, proof, habit]) {
+      expect(pl.phases.length).toBe(4);
+      expect(pl.phases[3].endDate).toBe(base.deadline);
+    }
+  });
+
+  it('週テーマがお金以外でも金銭の話にならない', () => {
+    const d = addDays(base.startDate, 10);
+    for (const [kindId, amount] of [
+      ['proof', 3],
+      ['skill', 1],
+      ['habit', 30],
+    ] as const) {
+      const prof = p({ goalKind: kindId, goalAmount: amount });
+      const pb = getPlaybook('content-seo');
+      const plan: Plan = {
+        ...buildPlan(prof, 'content-seo'),
+        consumedStepIds: filterByGoal(pb.steps, goalKindOf(prof)).map((x) => x.id),
+      };
+      const f = computeWeeklyFocus(prof, plan, {}, d);
+      const text = `${f.theme}${f.why}${f.kpi}`;
+      expect(text, kindId).not.toContain('単価');
+      expect(text, kindId).not.toContain('円');
+      expect(['make', 'finish', 'show', 'keep'], kindId).toContain(f.id);
+    }
+  });
+
+  it('探索中の週テーマは「比べること」になる', () => {
+    const prof = p({ goalKind: 'explore', goalAmount: 3 });
+    const dec = decide(prof);
+    const plan = buildPlan(prof, dec.playbookId, dec.exploreIds);
+    const f = computeWeeklyFocus(prof, plan, {}, addDays(base.startDate, 3));
+    expect(f.id).toBe('explore');
+    expect(f.theme).toContain('触ってみる');
+    // 探索が終われば通常のテーマに戻る
+    const after = computeWeeklyFocus(prof, plan, {}, addDays(base.startDate, 20));
+    expect(after.id).not.toBe('explore');
+  });
+});
+
+describe('目標タイプ別の上司の言葉', () => {
+  const kinds = ['money', 'proof', 'skill', 'habit'] as const;
+
+  it('どの目標タイプでも指示と示唆が壊れない', () => {
+    for (const k of kinds) {
+      const prof = p({ goalKind: k, goalAmount: k === 'money' ? 100000 : 30 });
+      const d = decide(prof);
+      const plan = buildPlan(prof, d.playbookId);
+      const pr = computeProgress(prof, plan, {}, addDays(base.startDate, 5));
+      const tasks = generateTasks({ plan, profile: prof, date: base.startDate, logs: {} });
+      const m = morningBriefing(prof, plan, pr, tasks, base.startDate);
+      expect(m.body.length, k).toBeGreaterThan(10);
+      const tips = insights(prof, plan, { ...pr, allTasks: 30 });
+      expect(tips.length, k).toBeGreaterThan(0);
+      const log: DayLog = { date: base.startDate, closed: true, tasks: [] };
+      expect(dayReview(prof, log, pr, 'keep').body.length).toBeGreaterThan(10);
+    }
+  });
+
+  it('お金以外の目標では「収益」という言葉を使わない', () => {
+    const prof = p({ goalKind: 'proof', goalAmount: 3 });
+    const d = decide(prof);
+    const plan = buildPlan(prof, d.playbookId);
+    const pr = computeProgress(prof, plan, {}, addDays(base.startDate, 40));
+    const tips = insights(prof, plan, { ...pr, allTasks: 30, totalRevenue: 2 });
+    expect(tips.join('')).not.toContain('収益');
+    const log: DayLog = { date: base.startDate, closed: true, tasks: [], revenue: 2 };
+    const rv = dayReview(prof, log, { ...pr, totalRevenue: 2 }, 'keep', 2);
+    expect(rv.body).toContain('本');
+    expect(rv.body).not.toContain('円');
+  });
+
+  it('習慣の目標では連続日数を突きつける', () => {
+    const prof = p({ goalKind: 'habit', goalAmount: 30 });
+    const d = decide(prof);
+    const plan = buildPlan(prof, d.playbookId);
+    const pr = computeProgress(prof, plan, {}, base.startDate);
+    const tips = insights(prof, plan, { ...pr, allTasks: 30, streak: 12 });
+    expect(tips.join('')).toContain('30日');
   });
 });
 

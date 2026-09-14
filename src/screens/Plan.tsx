@@ -1,7 +1,7 @@
 import { useAppStore } from '../store/useAppStore';
 import { getPlaybook } from '../domain/playbooks';
 import { computeProgress } from '../domain/progress';
-import { PHASE_META, phaseForDate } from '../domain/planner';
+import { phaseForDate } from '../domain/planner';
 import { Card, Progress, SectionTitle } from '../components/ui';
 import { cx } from '../lib/style';
 import { diffDays, formatJP, todayISO } from '../lib/date';
@@ -75,9 +75,7 @@ export default function Plan() {
                     </span>
                   )}
                 </div>
-                <p className="mt-2 text-[13px] leading-relaxed text-ink-300">
-                  {PHASE_META[ph.no].goal}
-                </p>
+                <p className="mt-2 text-[13px] leading-relaxed text-ink-300">{ph.goal}</p>
                 <div className="mt-2.5 flex items-center justify-between text-[11.5px] font-bold text-ink-500">
                   <span>
                     {formatJP(ph.startDate)} 〜 {formatJP(ph.endDate)}

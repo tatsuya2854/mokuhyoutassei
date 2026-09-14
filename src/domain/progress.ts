@@ -1,4 +1,5 @@
 import { getPlaybook } from './playbooks';
+import { filterByGoal, goalKindOf } from './goals';
 import { requiredMonthly } from './decide';
 import type { DayLog, Plan, Profile } from '../types';
 import { addDays, diffDays, monthKey, todayISO } from '../lib/date';
@@ -48,7 +49,7 @@ export function computeProgress(
   const passed = Math.max(diffDays(profile.startDate, today), 0);
   const elapsed = Math.min(passed / totalDays, 1);
 
-  const stepsTotal = getPlaybook(plan.playbookId).steps.length;
+  const stepsTotal = filterByGoal(getPlaybook(plan.playbookId).steps, goalKindOf(profile)).length;
   const planProgress = Math.min(plan.consumedStepIds.length / Math.max(stepsTotal, 1), 1);
 
   // 先読みで生成された未来日のタスクは実績に数えない

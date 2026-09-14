@@ -27,9 +27,21 @@ export type AvoidId =
 
 export type GoalMode = 'monthly' | 'total';
 
+/** いま一番しんどいこと。ここから目標の型を決める */
+export type AnxietyId = 'money' | 'career' | 'lost' | 'behind' | 'nocontinue' | 'noskill';
+
+/** 目標の型。お金だけが目標じゃない */
+export type GoalKind = 'money' | 'proof' | 'skill' | 'habit' | 'explore';
+
 /** ヒアリング結果 */
 export interface Profile {
+  /** 入口で選んだ不安 */
+  anxiety: AnxietyId;
+  /** 不安から決まる目標の型 */
+  goalKind: GoalKind;
+  /** 目標の数値。単位は goalKind による（円 / 本 / 個 / 日 / 案） */
   goalAmount: number;
+  /** monthly は goalKind === 'money' のときだけ意味を持つ */
   goalMode: GoalMode;
   deadline: string; // YYYY-MM-DD
   weeklyHours: number;
@@ -111,7 +123,10 @@ export interface Decision {
   rejected: { playbookId: string; score: number; reason: string }[];
   verdict: string; // 「これでいく」の断言文
   feasibility: 'easy' | 'tight' | 'hard';
+  /** goalKind === 'money' のときだけ意味を持つ。他は 0 */
   requiredMonthly: number;
+  /** 探索モードのとき、並行して試す手段（先頭が playbookId） */
+  exploreIds?: string[];
 }
 
 /** 生成された1タスク */
@@ -133,7 +148,8 @@ export interface DayLog {
   date: string;
   tasks: Task[];
   actualMin?: number;
-  revenue?: number; // その日に確定した収益
+  /** その日の成果。お金なら円、実績なら本数。目標タイプによって意味が変わる */
+  revenue?: number;
   memo?: string;
   closed: boolean; // 一日を締めたか
   mood?: 1 | 2 | 3;
@@ -141,6 +157,8 @@ export interface DayLog {
 
 export interface Plan {
   playbookId: string;
+  /** 探索モードで並行して試す手段。探索が終わったら undefined になる */
+  exploreIds?: string[];
   phases: PhaseInfo[];
   /** 消化済みステップID（順番に消費する） */
   consumedStepIds: string[];

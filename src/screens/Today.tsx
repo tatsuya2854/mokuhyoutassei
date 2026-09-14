@@ -3,7 +3,8 @@ import { useAppStore } from '../store/useAppStore';
 import { computeProgress } from '../domain/progress';
 import { dayReview, morningBriefing } from '../domain/coach';
 import { getPlaybook } from '../domain/playbooks';
-import { PHASE_META, phaseForDate } from '../domain/planner';
+import { exploreDaysLeft, isExploring, phaseForDate, phaseInfo } from '../domain/planner';
+import { goalKindOf } from '../domain/goals';
 import { computeWeeklyFocus } from '../domain/weekly';
 import { Button, Card, Progress, SectionTitle } from '../components/ui';
 import { cx, inputCls } from '../lib/style';
@@ -40,7 +41,9 @@ export default function Today() {
 
   const pb = getPlaybook(plan.playbookId);
   const phase = phaseForDate(plan, date);
-  const brief = morningBriefing(plan, progress, log.tasks, date);
+  const kind = goalKindOf(profile);
+  const exploring = isExploring(plan, date);
+  const brief = morningBriefing(profile, plan, progress, log.tasks, date);
   const focus = computeWeeklyFocus(profile, plan, logs, date);
   const done = log.tasks.filter((t) => t.done).length;
   const total = log.tasks.length;
@@ -62,7 +65,13 @@ export default function Today() {
       actualMin: actualMin ? Number(actualMin) : undefined,
     });
     const p2 = computeProgress(profile, useAppStore.getState().plan!, useAppStore.getState().logs, date);
-    const rv = dayReview(useAppStore.getState().logs[date], p2, reason, revenue ? Number(revenue) : undefined);
+    const rv = dayReview(
+      profile,
+      useAppStore.getState().logs[date],
+      p2,
+      reason,
+      revenue ? Number(revenue) : undefined,
+    );
     setReviewText(rv);
     setSheet('result');
     // 翌日分を先に用意しておく
@@ -82,9 +91,11 @@ export default function Today() {
         <div className="text-center">
           <div className="text-[15px] font-extrabold">{isToday ? '今日' : formatJP(date)}</div>
           <div className="text-[11px] font-bold text-ink-500">
-            {progress.planProgress >= 1
-              ? '反復フェーズ・改善サイクル'
-              : `フェーズ${phase}・${PHASE_META[phase].name}`}
+            {exploring
+              ? `探索中・残り${exploreDaysLeft(plan, date)}日`
+              : progress.planProgress >= 1
+                ? '反復フェーズ・改善サイクル'
+                : `フェーズ${phase}・${phaseInfo(plan, phase).name}`}
           </div>
         </div>
         <button
@@ -209,7 +220,8 @@ export default function Today() {
             <div className="text-[13px] font-extrabold text-ink-300">この日は締め済み</div>
             {log.revenue ? (
               <div className="mt-1.5 text-[13px] text-acid-400">
-                収益 {log.revenue.toLocaleString()}円
+                {kind.outcomeName} {log.revenue.toLocaleString()}
+                {kind.unit}
               </div>
             ) : null}
             {log.memo ? <p className="mt-1.5 text-[13px] text-ink-400">{log.memo}</p> : null}
@@ -246,12 +258,15 @@ export default function Today() {
               <span className="text-ink-400">連続 </span>
               <span className="font-extrabold tabular-nums text-acid-400">{progress.streak}日</span>
             </div>
-            <div>
-              <span className="text-ink-400">累計 </span>
-              <span className="font-extrabold tabular-nums">
-                {progress.totalRevenue.toLocaleString()}円
-              </span>
-            </div>
+            {kind.tracksOutcome && (
+              <div>
+                <span className="text-ink-400">累計 </span>
+                <span className="font-extrabold tabular-nums">
+                  {progress.totalRevenue.toLocaleString()}
+                  {kind.unit}
+                </span>
+              </div>
+            )}
           </div>
         </Card>
       </div>
@@ -260,19 +275,21 @@ export default function Today() {
       {sheet === 'close' && (
         <Sheet onClose={() => setSheet('none')} title="今日の実績を記録">
           <div className="space-y-4">
-            <div>
-              <label className="mb-1.5 block text-[13px] font-bold text-ink-200">
-                今日確定した収益（円）
-              </label>
-              <input
-                type="number"
-                inputMode="numeric"
-                value={revenue}
-                onChange={(e) => setRevenue(e.target.value)}
-                placeholder="0"
-                className={inputCls}
-              />
-            </div>
+            {kind.tracksOutcome && (
+              <div>
+                <label className="mb-1.5 block text-[13px] font-bold text-ink-200">
+                  {kind.outcomeLabel}
+                </label>
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  value={revenue}
+                  onChange={(e) => setRevenue(e.target.value)}
+                  placeholder="0"
+                  className={inputCls}
+                />
+              </div>
+            )}
             <div>
               <label className="mb-1.5 block text-[13px] font-bold text-ink-200">
                 実際の作業時間（分）

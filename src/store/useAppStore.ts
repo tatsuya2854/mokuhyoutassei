@@ -40,7 +40,7 @@ export const useAppStore = create<Store>()(
 
       start: (profile) => {
         const decision = decide(profile);
-        const plan = buildPlan(profile, decision.playbookId);
+        const plan = buildPlan(profile, decision.playbookId, decision.exploreIds);
         set({ profile, decision, plan, logs: {}, createdAt: todayISO() });
         get().ensureDay(todayISO());
       },
@@ -49,6 +49,7 @@ export const useAppStore = create<Store>()(
         const { profile } = get();
         if (!profile) return;
         const decision = decideWith(profile, playbookId);
+        // 手段を確定したら探索モードは終わり
         const plan = buildPlan(profile, playbookId);
         // 過去ログは残すが、未締めの今日分は作り直す
         const logs = { ...get().logs };
@@ -162,7 +163,20 @@ export const useAppStore = create<Store>()(
         }
       },
     }),
-    { name: 'mokuhyou-tassei-v1' },
+    {
+      name: 'mokuhyou-tassei-v1',
+      version: 2,
+      // v1（目標＝金額のみ）で保存されたデータを読めるようにする
+      migrate: (persisted, version) => {
+        const st = persisted as Partial<AppState>;
+        if (version >= 2 || !st?.profile) return st as AppState;
+        const prof = st.profile as Profile & Partial<Pick<Profile, 'anxiety' | 'goalKind'>>;
+        return {
+          ...st,
+          profile: { ...prof, anxiety: prof.anxiety ?? 'money', goalKind: prof.goalKind ?? 'money' },
+        } as AppState;
+      },
+    },
   ),
 );
 
