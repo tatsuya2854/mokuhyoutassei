@@ -31,7 +31,7 @@ export default function Stats() {
   }[p.pace];
 
   return (
-    <div className="px-4 pt-5 pb-28">
+    <div className="px-4 pb-28" style={{ paddingTop: 'calc(1.25rem + var(--safe-t))' }}>
       <h1 className="text-[22px] font-extrabold">分析</h1>
       <p className="mt-1 text-[13px] text-ink-400">
         ペース判定：<span className={cx('font-extrabold', paceLabel.c)}>{paceLabel.t}</span>

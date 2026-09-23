@@ -9,7 +9,7 @@ export default function LogList() {
   const recorded = days.filter((d) => d.tasks.length > 0);
 
   return (
-    <div className="px-4 pt-5 pb-28">
+    <div className="px-4 pb-28" style={{ paddingTop: 'calc(1.25rem + var(--safe-t))' }}>
       <h1 className="text-[22px] font-extrabold">記録</h1>
       <p className="mt-1 text-[13px] text-ink-400">
         やった／やらなかったを残す。ここが改善の材料になる。

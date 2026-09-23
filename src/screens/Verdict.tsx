@@ -21,7 +21,7 @@ export default function Verdict({ onConfirm }: { onConfirm: () => void }) {
   }[decision.feasibility];
 
   return (
-    <div className="min-h-dvh bg-ink-950 px-5 pt-8 pb-40">
+    <div className="min-h-dvh bg-ink-950 px-5 pb-40" style={{ paddingTop: 'calc(2rem + var(--safe-t))' }}>
       <div className="animate-rise">
         <div className="text-[12px] font-extrabold tracking-[0.2em] text-acid-500">結論</div>
         <h1 className="mt-3 text-[27px] leading-[1.25] font-extrabold">{decision.verdict}</h1>

@@ -57,7 +57,7 @@ export default function Settings({
   };
 
   return (
-    <div className="px-4 pt-5 pb-28">
+    <div className="px-4 pb-28" style={{ paddingTop: 'calc(1.25rem + var(--safe-t))' }}>
       <h1 className="text-[22px] font-extrabold">設定</h1>
 
       <div className="mt-5">

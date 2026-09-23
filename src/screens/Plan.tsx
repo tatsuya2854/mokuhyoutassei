@@ -17,7 +17,7 @@ export default function Plan() {
   const consumed = new Set(plan.consumedStepIds);
 
   return (
-    <div className="px-4 pt-5 pb-28">
+    <div className="px-4 pb-28" style={{ paddingTop: 'calc(1.25rem + var(--safe-t))' }}>
       <h1 className="text-[22px] font-extrabold">計画</h1>
       <p className="mt-1 text-[13px] text-ink-400">
         {pb.name} ／ {formatJP(profile.startDate)} 〜 {formatJP(profile.deadline)}

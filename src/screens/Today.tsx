@@ -116,7 +116,7 @@ export default function Today({ onUpgrade }: { onUpgrade: () => void }) {
   };
 
   return (
-    <div className="px-4 pt-4 pb-32">
+    <div className="px-4 pb-32" style={{ paddingTop: 'calc(1rem + var(--safe-t))' }}>
       {/* 日付ナビ */}
       <div className="mb-4 flex items-center justify-between">
         <button
