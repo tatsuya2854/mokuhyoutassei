@@ -102,7 +102,7 @@ export default function Chat({ onUpgrade }: { onUpgrade: () => void }) {
   if (!canChat) {
     const need = PLANS[requiredPlan('chatText')];
     return (
-      <div className="px-4 pt-4 pb-32">
+      <div className="px-4 pb-32" style={{ paddingTop: 'calc(1rem + var(--safe-t))' }}>
         <div className="card border-ink-700 p-5 text-center">
           <span className="mx-auto flex h-11 w-11 items-center justify-center rounded-xl bg-ink-700 text-ink-300">
             <IconLock className="h-5 w-5" />
@@ -130,7 +130,7 @@ export default function Chat({ onUpgrade }: { onUpgrade: () => void }) {
   }
 
   return (
-    <div className="flex min-h-dvh flex-col px-4 pt-4 pb-44">
+    <div className="flex min-h-dvh flex-col px-4 pb-44" style={{ paddingTop: 'calc(1rem + var(--safe-t))' }}>
       <div className="mb-3 flex items-center justify-between">
         <div>
           <div className="text-[16px] font-extrabold">AI秘書</div>

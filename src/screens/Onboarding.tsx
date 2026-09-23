@@ -102,7 +102,10 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
   return (
     <div className="flex min-h-dvh flex-col bg-ink-950">
       {idx > 0 && (
-        <div className="sticky top-0 z-10 bg-ink-950/95 px-5 pt-4 pb-3 backdrop-blur">
+        <div
+          className="sticky top-0 z-10 bg-ink-950/95 px-5 pb-3 backdrop-blur"
+          style={{ paddingTop: 'calc(1rem + var(--safe-t))' }}
+        >
           <Progress value={idx / lastIdx} height={4} />
           <div className="mt-2 flex items-center justify-between">
             <button
@@ -118,7 +121,10 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
         </div>
       )}
 
-      <div className="flex-1 px-5 pb-40">
+      <div
+        className="flex-1 px-5 pb-40"
+        style={idx === 0 ? { paddingTop: 'var(--safe-t)' } : undefined}
+      >
         {step === 'welcome' && <Welcome />}
 
         {step === 'anxiety' && (

@@ -38,8 +38,11 @@ export default function Pricing({ onClose }: { onClose: () => void }) {
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-ink-950">
       <div
-        className="mx-auto max-w-lg px-4 pt-4"
-        style={{ paddingBottom: 'calc(2rem + var(--safe-b))' }}
+        className="mx-auto max-w-lg px-4"
+        style={{
+          paddingTop: 'calc(1rem + var(--safe-t))',
+          paddingBottom: 'calc(2rem + var(--safe-b))',
+        }}
       >
         <div className="flex items-center justify-between">
           <div className="text-[17px] font-extrabold">プラン</div>

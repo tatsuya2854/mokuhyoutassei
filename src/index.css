@@ -31,6 +31,8 @@
 
 :root {
   color-scheme: dark;
+  /* viewport-fit=cover にしているので、端末の切り欠き分は自分で避ける必要がある */
+  --safe-t: env(safe-area-inset-top, 0px);
   --safe-b: env(safe-area-inset-bottom, 0px);
 }
 
