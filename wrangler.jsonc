@@ -1,0 +1,23 @@
+{
+  // Cloudflare Workers に静的サイトとして出すための設定。
+  //
+  // サーバー側のコード（main）は持たない。dist/ をそのまま配信するだけの
+  // 「アセットのみ Worker」。将来 Stripe の決済サーバーや AI秘書のプロキシが
+  // 必要になったら、ここに main を足して同じドメイン上に置ける。
+  //
+  // ■ ここに鍵は書かない
+  // シークレットは wrangler secret put でCloudflare側に置く。
+  // このファイルはリポジトリに入るので、値は一切持たせない。
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "mokuhyoutassei",
+  "compatibility_date": "2025-09-23",
+  "assets": {
+    "directory": "./dist",
+    // SPAなので、知らないパスは index.html に返す。
+    // これが無いと /plan などを直接開いたときに404になる。
+    "not_found_handling": "single-page-application"
+  },
+  "observability": {
+    "enabled": true
+  }
+}

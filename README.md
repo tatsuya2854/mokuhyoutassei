@@ -318,34 +318,71 @@ npm run dev          # http://localhost:5173
 | `npm run lint` | oxlint |
 | `npm run typecheck` | 型チェック |
 | `npm run check` | lint → 型 → テスト → ビルドを一括 |
+| `npm run cf:check` | Cloudflare の設定とアセットを検証（デプロイしない） |
+| `npm run cf:deploy` | ビルドして Cloudflare に公開 |
 
 ---
 
 ## 公開する
 
-ビルド成果物は静的ファイルだけなので、どこにでも置けます。
+**本番は Cloudflare Workers です。** 人に渡すURLはこれ1つに固定してください。
 
-### GitHub Pages
+> **使うURLは必ず1つに決めること。**
+> 記録はブラウザの localStorage に入り、これは**オリジン（URL）ごとに分かれます**。
+> 別のURLで開くと記録は引き継がれず、初回ヒアリングからやり直しになります。
+
+### Cloudflare Workers（本番）
+
+`wrangler.jsonc` を同梱しています。サーバー側のコードは持たず、`dist/` をそのまま
+配信する「アセットのみ Worker」です。将来 Stripe の決済サーバーや AI秘書のプロキシが
+必要になったら、`main` を足して**同じドメイン上に**置けます。
+
+Cloudflare ダッシュボードの **Workers & Pages → (プロジェクト) → Settings → Build**
+で、次の1項目だけ設定します。
+
+| 項目 | 値 |
+| --- | --- |
+| **Build command** | `npm run build` |
+| Deploy command | `npx wrangler deploy`（既定のまま） |
+| Root directory | （空のまま） |
+| 環境変数 | 不要 |
+
+以降、`main` に push すると Cloudflare が自動でビルドして公開します。
+
+手元から出すこともできます。
+
+```bash
+npm run cf:check    # 設定とアセットの検証（デプロイしない）
+npm run cf:deploy   # ビルドして公開
+```
+
+SPAのフォールバックは `wrangler.jsonc` の
+`assets.not_found_handling: "single-page-application"` が担当します。
+これが無いと `/plan` などを直接開いたときに 404 になります。
+
+ルート配信なので `VITE_BASE` は設定しません（既定値の `/` が使われます）。
+
+### GitHub Pages（予備・人には渡さない）
 
 `main` に push すると `.github/workflows/deploy.yml` が自動でデプロイします。
 リポジトリの **Settings → Pages → Source** を **GitHub Actions** に設定してください。
 
+本番が落ちたときにすぐ確認できる保険として残していますが、
+**このURLは誰にも渡さないでください**（渡すと記録が2か所に割れます）。
+
 サブディレクトリ配信（`https://<user>.github.io/<repo>/`）に対応するため、
 ワークフローは `VITE_BASE=/<repo>/` を渡してビルドします。
 
-### Cloudflare Pages
+### Cloudflare Pages を使う場合
 
-リポジトリを繋ぐだけで動きます。設定は以下。
+Workers ではなく Pages プロジェクトとして繋ぐ場合は、`wrangler.jsonc` は使われません。
 
 | 項目 | 値 |
 | --- | --- |
 | Framework preset | None（または Vite） |
 | Build command | `npm run build` |
 | Build output directory | `dist` |
-| Root directory | （空のまま） |
-| 環境変数 | 不要 |
 
-ルート配信なので `VITE_BASE` は設定しません（既定値の `/` が使われます）。
 SPAのフォールバックは `public/_redirects` が `dist/_redirects` として出力され、
 Cloudflare Pages がそれを読みます。
 
@@ -498,9 +535,12 @@ src/
 設定画面からJSONで書き出し／読み込みができるので、端末を移すときはそれで移行してください。
 
 > **公開URLを変えるときは注意。** localStorage はサイト（オリジン）ごとに分かれているため、
-> 例えば `github.io` から `pages.dev` に移ると記録は引き継がれず、初回ヒアリングからやり直しになります。
+> 例えば `github.io` から `workers.dev` に移ると記録は引き継がれず、初回ヒアリングからやり直しになります。
 > 移行する前に設定画面から「書き出す」でバックアップを取り、移行先で「読み込む」で復元してください。
-> 複数のURLを併用すると記録が分散するので、**使うURLは1つに決めてください**。
+> 複数のURLを併用すると記録が分散するので、**使うURLは1つに決めてください**（本番は Cloudflare）。
+>
+> 独自ドメインを当てておくと、この問題は根本的に消えます。ドメインは変えずに
+> 配信先だけ差し替えられるので、ホストを移しても記録が飛びません。
 
 ---
 
