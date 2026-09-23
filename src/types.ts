@@ -129,6 +129,12 @@ export interface Decision {
   exploreIds?: string[];
 }
 
+/**
+ * タスクの重要度。1日に must はひとつだけ。
+ * 「3個中1個しか終わらなくても、その1個が最重要なら前進」を判定するための軸。
+ */
+export type Priority = 'must' | 'should' | 'nice';
+
 /** 生成された1タスク */
 export interface Task {
   id: string;
@@ -138,21 +144,53 @@ export interface Task {
   phase: PhaseNo;
   title: string;
   detail: string;
+  /** 見積り分数（長期記憶で補正済みの値が入る） */
   estMin: number;
+  /** カタログ上の素の見積り。補正前の値 */
+  baseMin?: number;
   tag: string;
+  priority: Priority;
   done: boolean;
   carriedFrom?: string; // 繰越元の日付
+  /** 「今日はパス」で送り先に決めた日付 */
+  deferredTo?: string;
+  /** 何回先送りされたか */
+  deferCount?: number;
+  /** 再計画を選んだときの理由表示 */
+  replanNote?: string;
 }
 
 export interface DayLog {
   date: string;
   tasks: Task[];
+  /** 実際にかかった分数。見積りとのズレを学習するのに使う */
   actualMin?: number;
   /** その日の成果。お金なら円、実績なら本数。目標タイプによって意味が変わる */
   revenue?: number;
   memo?: string;
   closed: boolean; // 一日を締めたか
   mood?: 1 | 2 | 3;
+}
+
+/** 先送り・再計画で未来に置き直されたタスク */
+export interface ParkedTask {
+  sourceId: string;
+  kind: Task['kind'];
+  phase: PhaseNo;
+  title: string;
+  detail: string;
+  estMin: number;
+  baseMin?: number;
+  tag: string;
+  priority: Priority;
+  /** 置き直した先の日付 */
+  dueOn: string;
+  /** 何回先送りされたか */
+  deferCount: number;
+  /** どこから来たか（繰越表示に使う） */
+  from: string;
+  /** なぜその日に置いたのか（上司の説明） */
+  reason: string;
 }
 
 export interface Plan {
@@ -167,6 +205,10 @@ export interface Plan {
   /** 1日あたりの作業分数（調整で増減する） */
   dailyMinutes: number;
   baseDailyMinutes: number;
+  /** 先送り・再計画で未来に置き直されたタスク */
+  parked?: ParkedTask[];
+  /** 「もうやらない」と判断して捨てたタスクのID */
+  droppedIds?: string[];
 }
 
 export interface AppState {

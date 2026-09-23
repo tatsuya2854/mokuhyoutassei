@@ -3,6 +3,7 @@ import type { Progress } from './progress';
 import { getPlaybook } from './playbooks';
 import { ANXIETY_MAP, goalKindOf, goalLabel } from './goals';
 import { exploreDaysLeft, isExploring, phaseForDate, phaseInfo } from './planner';
+import { judgeDay } from './judge';
 import { diffDays, formatJP } from '../lib/date';
 
 export interface CoachMessage {
@@ -88,9 +89,15 @@ export function morningBriefing(
         : `期限まで残り${progress.daysLeft}日。目標は「${goalLabel(profile)}」。`
       : '';
 
+  const must = tasks.find((t) => t.priority === 'must');
+  const mustNote = must
+    ? `今日の本命は「${must.title}」。これさえ終われば、残りが消えても今日は前進扱いでいい。`
+    : '';
+
   const body = [
     lead,
     carryNote,
+    mustNote,
     `今日の総量は${totalMin}分。${tasks.length}件。`,
     daysLeftInPhase <= 3 && phase < 4 && !exploring
       ? `「${info.name}」は残り${daysLeftInPhase}日。ここまでに${info.goal.replace(/。$/, '')}を終わらせる。`
@@ -115,30 +122,42 @@ export function dayReview(
   outcome?: number,
 ): CoachMessage {
   const kind = goalKindOf(profile);
-  const done = log.tasks.filter((t) => t.done).length;
-  const total = log.tasks.length;
-  const rate = total === 0 ? 0 : done / total;
+  const j = judgeDay(log);
+  const { done, total } = j;
 
   let headline: string;
   let tone: CoachMessage['tone'];
   let lead: string;
 
-  if (rate === 1) {
-    tone = 'praise';
-    headline = '全部消化。おつかれ！';
-    lead = `${total}件、全部やり切った。この日が積み上がると数字は勝手についてくる。`;
-  } else if (rate >= 0.5) {
-    tone = 'calm';
-    headline = `${done}/${total}。悪くない。`;
-    lead = `完璧じゃなくていい。ゼロじゃない日を続けることの方が10倍大事。残りは明日の先頭に回す。`;
-  } else if (done > 0) {
-    tone = 'push';
-    headline = `${done}/${total}。ちょっと足りない。`;
-    lead = `動いたのは評価する。ただ今日の量は残った。原因は時間が無かったのか、タスクが重かったのか、そこだけはっきりさせよう。`;
-  } else {
-    tone = 'warn';
-    headline = '今日はゼロ。';
-    lead = `理由は聞かない。ただ、ゼロの日が続くと計画が崩れるんじゃなくて「やれない自分」が固定されるのが怖い。明日は1個だけでいい。`;
+  switch (j.verdict) {
+    case 'full':
+      tone = 'praise';
+      headline = '全部消化。おつかれ！';
+      lead = `${total}件、全部やり切った。この日が積み上がると数字は勝手についてくる。`;
+      break;
+    case 'win':
+      tone = 'praise';
+      headline = j.mustDone ? '今日は勝ち。' : `${done}/${total}。悪くない。`;
+      lead = j.mustDone
+        ? `${done}/${total}件。でも今日の本命は終わってる。残った${total - done}件は「やれなかった分」じゃなくて「今日やらなくてよかった分」。ちゃんと組み直して明日以降に回す。`
+        : `完璧じゃなくていい。ゼロじゃない日を続けることの方が10倍大事。残りは組み直して回す。`;
+      break;
+    case 'partial':
+      tone = 'push';
+      headline = j.hasMust ? '動いたけど本命が残った。' : `${done}/${total}。少し進んだ。`;
+      lead = j.hasMust
+        ? `${done}件やったのは事実。ただ最重要が残ってる。明日はそれを朝いちばんに置く。順番を変えるだけで変わる。`
+        : `動いたのは評価する。ただ今日の量は残った。時間が無かったのか、タスクが重かったのか、そこだけはっきりさせよう。`;
+      break;
+    case 'empty':
+      tone = 'calm';
+      headline = '今日は予定なし。';
+      lead = '休むのも計画のうち。明日またここに出す。';
+      break;
+    default:
+      tone = 'warn';
+      headline = '今日はゼロ。';
+      lead = `理由は聞かない。ただ、ゼロの日が続くと計画が崩れるんじゃなくて「やれない自分」が固定されるのが怖い。明日は1個だけでいい。`;
   }
 
   let outcomeNote = '';

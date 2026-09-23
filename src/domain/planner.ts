@@ -1,6 +1,17 @@
 import { getPlaybook } from './playbooks';
 import { EXPLORE_DAYS, filterByGoal, goalKindOf } from './goals';
-import type { DayLog, GoalKind, PhaseInfo, PhaseNo, Plan, Profile, Task } from '../types';
+import { BLANK_MEMORY, adjustEstimate } from './memory';
+import type { Memory } from './memory';
+import type {
+  DayLog,
+  GoalKind,
+  PhaseInfo,
+  PhaseNo,
+  Plan,
+  Priority,
+  Profile,
+  Task,
+} from '../types';
 import { addDays, clampISO, diffDays, todayISO, weekKey } from '../lib/date';
 import { computeWeeklyFocus, loopState, weeklyReviewTask } from './weekly';
 
@@ -121,11 +132,15 @@ export function phaseInfo(plan: Plan, no: PhaseNo): PhaseInfo {
 let seq = 0;
 const taskId = (date: string, sourceId: string) => `${date}_${sourceId}_${seq++}`;
 
+const consumedHas = (plan: Plan, id: string) => plan.consumedStepIds.includes(id);
+
 export interface GenerateInput {
   plan: Plan;
   profile: Profile;
   date: string;
   logs: Record<string, DayLog>;
+  /** 長期記憶。渡さなければ補正なしで動く */
+  memory?: Memory;
 }
 
 /**
@@ -137,19 +152,29 @@ export interface GenerateInput {
  * 5. 改善サイクル（立ち上げ完了後。収益や消化率の状況で出し分ける）
  * これらを、その日の作業分数の枠に収まるまで詰める。
  */
-export function generateTasks({ plan, profile, date, logs }: GenerateInput): Task[] {
+export function generateTasks({ plan, profile, date, logs, memory }: GenerateInput): Task[] {
   const pb = getPlaybook(plan.playbookId);
   const kind = goalKindOf(profile);
+  const mem = memory ?? BLANK_MEMORY;
   const exploring = isExploring(plan, date);
   const phase = phaseForDate(plan, date);
   const budget = plan.dailyMinutes;
+  const dropped = new Set(plan.droppedIds ?? []);
   const out: Task[] = [];
   let used = 0;
 
-  const push = (t: Omit<Task, 'id' | 'done'>) => {
-    out.push({ ...t, id: taskId(date, t.sourceId), done: false });
+  // 1日に must はひとつだけ。「これさえ終われば今日は前進」を1つに絞る
+  let mustTaken = false;
+  const push = (t: Omit<Task, 'id' | 'done' | 'priority'> & { priority?: Priority }) => {
+    let priority: Priority = t.priority ?? 'should';
+    if (priority === 'must' && mustTaken) priority = 'should';
+    if (priority === 'must') mustTaken = true;
+    out.push({ ...t, priority, id: taskId(date, t.sourceId), done: false });
     used += t.estMin;
   };
+
+  /** 見積りを長期記憶で補正する */
+  const est = (baseMin: number, tag: string) => adjustEstimate(baseMin, tag, mem);
 
   // --- 1. 繰越 ---
   const prevDates = Object.keys(logs)
@@ -158,12 +183,53 @@ export function generateTasks({ plan, profile, date, logs }: GenerateInput): Tas
   const carried: Task[] = [];
   for (const d of prevDates.slice(-4)) {
     for (const t of logs[d].tasks) {
-      if (!t.done && !carried.some((c) => c.sourceId === t.sourceId)) {
-        carried.push({ ...t, carriedFrom: t.carriedFrom ?? d });
-      }
+      if (t.done || dropped.has(t.sourceId)) continue;
+      // 「今日はパス」で先の日付に置き直したものは、その日まで出さない
+      if (t.deferredTo && diffDays(date, t.deferredTo) > 0) continue;
+      if (carried.some((c) => c.sourceId === t.sourceId)) continue;
+      carried.push({ ...t, carriedFrom: t.carriedFrom ?? d });
     }
   }
+  // まだ置き直し先の日が来ていないものは、カタログからも出さない。
+  // ここを塞がないと「パスしたのに翌日また出てくる」ことになって、判断した意味が消える。
+  const held = new Set<string>();
+  for (const pk of plan.parked ?? []) if (pk.dueOn > date) held.add(pk.sourceId);
+  for (const d of prevDates.slice(-7)) {
+    for (const t of logs[d].tasks) {
+      if (t.deferredTo && diffDays(date, t.deferredTo) > 0) held.add(t.sourceId);
+    }
+  }
+  /** 今日は出せないタスク（捨てた or 置き直し待ち） */
+  const blocked = (id: string) => dropped.has(id) || held.has(id);
+
+  // 置き直して今日に戻ってきたタスク
+  const parkedToday = (plan.parked ?? []).filter(
+    (pk) => pk.dueOn <= date && !dropped.has(pk.sourceId) && !consumedHas(plan, pk.sourceId),
+  );
+
+  for (const pk of parkedToday) {
+    if (out.length >= 5) break;
+    if (used + pk.estMin > budget * 1.25 && out.length >= 1) break;
+    push({
+      date,
+      sourceId: pk.sourceId,
+      kind: pk.kind,
+      phase: pk.phase,
+      title: pk.title,
+      detail: pk.detail,
+      estMin: est(pk.baseMin ?? pk.estMin, pk.tag),
+      baseMin: pk.baseMin ?? pk.estMin,
+      tag: pk.tag,
+      // 一度逃げたものは、次はいちばん上に置く
+      priority: pk.deferCount >= 1 ? 'must' : pk.priority,
+      carriedFrom: pk.from,
+      deferCount: pk.deferCount,
+      replanNote: pk.reason,
+    });
+  }
+
   for (const t of carried) {
+    if (out.some((o) => o.sourceId === t.sourceId)) continue;
     if (used + t.estMin > budget * 1.25 && out.length >= 1) break;
     push({
       date,
@@ -173,8 +239,13 @@ export function generateTasks({ plan, profile, date, logs }: GenerateInput): Tas
       title: t.title,
       detail: t.detail,
       estMin: t.estMin,
+      baseMin: t.baseMin,
       tag: t.tag,
+      // 繰越は先頭に戻す。ただし本命の座は、計画の背骨（ステップ）と
+      // もともと本命だったものに譲る。振り返りタスクが本命になるのはおかしい。
+      priority: t.priority === 'must' || t.kind === 'step' ? 'must' : 'should',
       carriedFrom: t.carriedFrom,
+      deferCount: t.deferCount,
     });
   }
 
@@ -189,7 +260,7 @@ export function generateTasks({ plan, profile, date, logs }: GenerateInput): Tas
     const books = (plan.exploreIds ?? []).map((id) => getPlaybook(id));
     const lanes = books.map((b) =>
       filterByGoal(b.steps, kind)
-        .filter((st) => st.phase === 1 && !consumed.has(st.id) && !already.has(st.id))
+        .filter((st) => st.phase === 1 && !consumed.has(st.id) && !already.has(st.id) && !blocked(st.id))
         .map((st) => ({ ...st, title: `【${b.name}】${st.title}` })),
     );
     const mixed: typeof lanes[number] = [];
@@ -200,7 +271,11 @@ export function generateTasks({ plan, profile, date, logs }: GenerateInput): Tas
 
   const pickSteps = (maxPhase: number) =>
     filterByGoal(pb.steps, kind).filter(
-      (st) => !consumed.has(st.id) && !already.has(st.id) && st.phase <= maxPhase,
+      (st) =>
+        !consumed.has(st.id) &&
+        !already.has(st.id) &&
+        !blocked(st.id) &&
+        st.phase <= maxPhase,
     );
   // 現フェーズ分を消化しきったら、次フェーズを前倒しで始める
   const steps = exploring
@@ -214,10 +289,11 @@ export function generateTasks({ plan, profile, date, logs }: GenerateInput): Tas
     const remaining = budget - used;
     // 残り枠が細切れすぎるなら翌日に回す（ただし1件も無い日は必ず出す）
     if (remaining < MIN_SLOT && out.length > 0) break;
-    const fits = st.estMin <= remaining;
+    const want = est(st.estMin, st.tag);
+    const fits = want <= remaining;
     // 1日の枠に収まらないステップは、残り枠の分だけ進める。
     // チェックを入れるまで消化扱いにならないので、翌日も先頭に出続ける。
-    const estMin = fits ? st.estMin : Math.max(MIN_SLOT, remaining);
+    const estMin = fits ? want : Math.max(MIN_SLOT, remaining);
     push({
       date,
       sourceId: st.id,
@@ -226,9 +302,12 @@ export function generateTasks({ plan, profile, date, logs }: GenerateInput): Tas
       title: st.title,
       detail: fits
         ? st.detail
-        : `${st.detail}\n\n※ 1日では終わらない量（全体で約${st.estMin}分）。今日は時間の範囲まで進めて、終わったらチェックを入れて。`,
+        : `${st.detail}\n\n※ 1日では終わらない量（全体で約${want}分）。今日は時間の範囲まで進めて、終わったらチェックを入れて。`,
       estMin,
+      baseMin: st.estMin,
       tag: st.tag,
+      // 計画の背骨。その日の最初のステップが「これさえ終われば前進」の1件
+      priority: 'must',
     });
     already.add(st.id);
     if (!fits) break; // 分割した日はそこで打ち切る
@@ -251,8 +330,10 @@ export function generateTasks({ plan, profile, date, logs }: GenerateInput): Tas
       phase,
       title: t.title,
       detail: t.detail,
-      estMin: t.estMin,
+      estMin: est(t.estMin, t.tag),
+      baseMin: t.estMin,
       tag: t.tag,
+      priority: 'should',
     });
     already.add(REVIEW_ID);
   }
@@ -266,7 +347,7 @@ export function generateTasks({ plan, profile, date, logs }: GenerateInput): Tas
       // 立ち上げ作業そのもののルーティンは、立ち上がったら出さない
       .filter((r) => !(r.untilLaunch && state.launched))
       .filter((r) => (counts[r.id] ?? 0) < r.perWeek)
-      .filter((r) => !already.has(r.id))
+      .filter((r) => !already.has(r.id) && !blocked(r.id))
       // 残回数が多い（＝遅れている）ものを優先
       .sort((a, b) => b.perWeek - (counts[b.id] ?? 0) - (a.perWeek - (counts[a.id] ?? 0)));
   // ステップを前倒しで進めている日は、ルーティンも先のフェーズから引っぱる
@@ -280,7 +361,7 @@ export function generateTasks({ plan, profile, date, logs }: GenerateInput): Tas
   // 立ち上げ完了後だけ、状況に合った改善サイクルを候補に入れる
   const cycles = state.launched
     ? filterByGoal(pb.cycles, kind)
-        .filter((cy) => !already.has(cy.id))
+        .filter((cy) => !already.has(cy.id) && !blocked(cy.id))
         .filter((cy) => (counts[cy.id] ?? 0) === 0)
         .filter((cy) => {
           if (cy.when === 'always') return true;
@@ -294,12 +375,12 @@ export function generateTasks({ plan, profile, date, logs }: GenerateInput): Tas
   const ordered =
     state.recentRate < 0.5 ? [...cycles].sort((a, b) => a.estMin - b.estMin) : cycles;
 
-  type Candidate = { kind: 'routine' | 'cycle'; id: string; title: string; detail: string; estMin: number; tag: string; phase: PhaseNo };
+  type Candidate = { kind: 'routine' | 'cycle'; id: string; title: string; detail: string; estMin: number; tag: string; phase: PhaseNo; priority: Priority };
   const rq: Candidate[] = routines.map((r) => ({
-    kind: 'routine', id: r.id, title: r.title, detail: r.detail, estMin: r.estMin, tag: r.tag, phase: r.phase,
+    kind: 'routine', id: r.id, title: r.title, detail: r.detail, estMin: r.estMin, tag: r.tag, phase: r.phase, priority: 'should',
   }));
   const cq: Candidate[] = ordered.map((cy) => ({
-    kind: 'cycle', id: cy.id, title: cy.title, detail: cy.detail, estMin: cy.estMin, tag: cy.tag, phase: 4,
+    kind: 'cycle', id: cy.id, title: cy.title, detail: cy.detail, estMin: cy.estMin, tag: cy.tag, phase: 4, priority: 'nice',
   }));
 
   // 改善サイクルを先頭に、以降は交互。どちらかが尽きたら残りをそのまま続ける
@@ -311,7 +392,9 @@ export function generateTasks({ plan, profile, date, logs }: GenerateInput): Tas
 
   for (const cand of merged) {
     if (out.length >= 5) break;
-    if (used + cand.estMin > budget) continue; // 入らないものは飛ばして、入るものを詰める
+    if (blocked(cand.id)) continue;
+    const want = est(cand.estMin, cand.tag);
+    if (used + want > budget) continue; // 入らないものは飛ばして、入るものを詰める
     push({
       date,
       sourceId: cand.id,
@@ -319,8 +402,10 @@ export function generateTasks({ plan, profile, date, logs }: GenerateInput): Tas
       phase: cand.phase,
       title: cand.title,
       detail: cand.detail,
-      estMin: cand.estMin,
+      estMin: want,
+      baseMin: cand.estMin,
       tag: cand.tag,
+      priority: cand.priority,
     });
     already.add(cand.id);
   }
@@ -342,8 +427,10 @@ export function generateTasks({ plan, profile, date, logs }: GenerateInput): Tas
         phase: 4,
         title: generic.title,
         detail: generic.detail,
-        estMin: generic.estMin,
+        estMin: est(generic.estMin, generic.tag),
+        baseMin: generic.estMin,
         tag: generic.tag,
+        priority: 'should',
       });
     } else {
       // ここに来る＝今週のぶんを全部やり切った日。無理に作業をでっち上げない。
@@ -352,6 +439,7 @@ export function generateTasks({ plan, profile, date, logs }: GenerateInput): Tas
         sourceId: CLEAR_ID,
         kind: 'review',
         phase,
+        priority: 'nice',
         title: '今週のぶんは終わってる。休むか、前倒しするか決める',
         detail:
           '今週やるべきことは全部消化済み。ここで無理に作業を足しても質が落ちるだけ。\n\n休むなら休む、進めるなら「＋追加」で来週やる予定のものを1つ前倒しする——どっちでもいい。決めたらチェックを入れて。\n\n計画は崩れてない。',
@@ -361,8 +449,10 @@ export function generateTasks({ plan, profile, date, logs }: GenerateInput): Tas
     }
   }
 
-  // 繰越を先頭に、あとは見積り時間の短い順（着手のハードルを下げる）
+  // 最重要をいちばん上に。次に繰越、あとは見積り時間の短い順（着手のハードルを下げる）
+  const rank: Record<Priority, number> = { must: 0, should: 1, nice: 2 };
   return out.sort((a, b) => {
+    if (rank[a.priority] !== rank[b.priority]) return rank[a.priority] - rank[b.priority];
     if (!!a.carriedFrom !== !!b.carriedFrom) return a.carriedFrom ? -1 : 1;
     return a.estMin - b.estMin;
   });

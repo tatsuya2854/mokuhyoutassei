@@ -2,6 +2,7 @@ import { useAppStore } from '../store/useAppStore';
 import { computeProgress, dailyRates, monthlyRevenue, tagBreakdown } from '../domain/progress';
 import { insights } from '../domain/coach';
 import { computeWeeklyFocus } from '../domain/weekly';
+import { buildMemory, memoryInsights } from '../domain/memory';
 import { goalKindOf, goalLabel } from '../domain/goals';
 import { Card, Empty, Progress, SectionTitle, Stat } from '../components/ui';
 import { cx } from '../lib/style';
@@ -18,6 +19,8 @@ export default function Stats() {
   const tags = tagBreakdown(logs);
   const tips = insights(profile, plan, p);
   const focus = computeWeeklyFocus(profile, plan, logs, today);
+  const mem = buildMemory(logs, today);
+  const learned = memoryInsights(mem);
 
   const kind = goalKindOf(profile);
   const paceLabel = {
@@ -118,6 +121,22 @@ export default function Stats() {
             </Card>
           ))}
         </div>
+      </div>
+
+      <div className="mt-7">
+        <SectionTitle right={<span className="text-[11px] text-ink-500">{mem.days}日分</span>}>
+          あなたについて分かったこと
+        </SectionTitle>
+        <div className="space-y-2">
+          {learned.map((t, i) => (
+            <Card key={i} className="border-ink-700 bg-ink-850">
+              <p className="text-[13.5px] leading-relaxed text-ink-200">{t}</p>
+            </Card>
+          ))}
+        </div>
+        <p className="mt-2 text-[11px] leading-relaxed text-ink-500">
+          ここで分かったことは、そのまま明日以降の見積りとタスクの置き場所に反映される。
+        </p>
       </div>
 
       <div className="mt-7">

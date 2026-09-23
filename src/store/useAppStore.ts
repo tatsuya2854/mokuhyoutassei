@@ -1,11 +1,24 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { AppState, DayLog, Plan, Profile } from '../types';
+import type { AppState, DayLog, ParkedTask, Plan, Profile } from '../types';
 import { decide, decideWith } from '../domain/decide';
 import { buildPlan, computeDailyMinutes, generateTasks } from '../domain/planner';
 import { closeDay, computeAdjustment } from '../domain/adjust';
 import { computeProgress } from '../domain/progress';
+import { buildMemory, placeTask } from '../domain/memory';
+import type { Memory } from '../domain/memory';
 import { todayISO } from '../lib/date';
+
+/** 「今日はパス」と「再計画」の違い。どちらも未来に置き直すが、言い方と置き方が変わる */
+export type MoveMode = 'defer' | 'replan';
+
+/** 置き直した結果。UIでそのまま上司の言葉として出す */
+export interface MoveResult {
+  date: string;
+  reason: string;
+  /** 逃げ続けているので「捨てるか」を問うべき状態 */
+  askDrop: boolean;
+}
 
 interface Store extends AppState {
   /** ヒアリング完了 → 手段決定 → 計画生成 */
@@ -20,6 +33,16 @@ interface Store extends AppState {
   /** タスクを1件追加（ユーザー任意） */
   addCustomTask: (date: string, title: string, estMin: number) => void;
   removeTask: (date: string, taskId: string) => void;
+  /** 「今日はパス」／「再計画」。記憶を見ていちばん終わりそうな日に置き直す */
+  moveTask: (date: string, taskId: string, mode: MoveMode) => MoveResult | null;
+  /** 置き直しを取り消して今日に戻す */
+  undoMove: (date: string, taskId: string) => void;
+  /** 「もうやらない」。以降このタスクは生成されない */
+  dropTask: (date: string, taskId: string) => void;
+  /** 捨てたタスクを復活させる */
+  undropTask: (sourceId: string) => void;
+  /** 行動データから作る長期記憶 */
+  memory: (date?: string) => Memory;
   updateProfile: (patch: Partial<Profile>) => void;
   reset: () => void;
   importState: (raw: string) => boolean;
@@ -63,8 +86,120 @@ export const useAppStore = create<Store>()(
         const { plan, profile, logs } = get();
         if (!plan || !profile) return;
         if (logs[date]) return;
-        const tasks = generateTasks({ plan, profile, date, logs });
-        set({ logs: { ...logs, [date]: { date, tasks, closed: false } } });
+        const memory = buildMemory(logs, date);
+        const tasks = generateTasks({ plan, profile, date, logs, memory });
+        // その日に呼び戻したぶんは、置き場（parked）から外す
+        const shown = new Set(tasks.map((t) => t.sourceId));
+        const parked = (plan.parked ?? []).filter((pk) => !(pk.dueOn <= date && shown.has(pk.sourceId)));
+        set({
+          plan: parked.length === (plan.parked ?? []).length ? plan : { ...plan, parked },
+          logs: { ...logs, [date]: { date, tasks, closed: false } },
+        });
+      },
+
+      memory: (date) => buildMemory(get().logs, date ?? todayISO()),
+
+      moveTask: (date, taskId, mode) => {
+        const { plan, profile, logs } = get();
+        if (!plan || !profile) return null;
+        const log = logs[date];
+        const task = log?.tasks.find((t) => t.id === taskId);
+        if (!log || !task) return null;
+
+        const deferCount = task.deferCount ?? 0;
+        const pl = placeTask(task, buildMemory(logs, date), date, profile.deadline, {
+          workdaysPerWeek: profile.workdaysPerWeek,
+          deferCount,
+        });
+
+        const reason = mode === 'replan' ? `組み直した：${pl.reason}` : pl.reason;
+        const entry: ParkedTask = {
+          sourceId: task.sourceId,
+          kind: task.kind,
+          phase: task.phase,
+          title: task.title,
+          detail: task.detail,
+          estMin: task.estMin,
+          baseMin: task.baseMin ?? task.estMin,
+          tag: task.tag,
+          priority: task.priority,
+          dueOn: pl.date,
+          deferCount: deferCount + 1,
+          from: task.carriedFrom ?? date,
+          reason,
+        };
+
+        // 同じタスクが二重に置かれないようにする
+        const parked = [...(plan.parked ?? []).filter((p) => p.sourceId !== task.sourceId), entry];
+
+        set({
+          plan: { ...plan, parked },
+          logs: {
+            ...logs,
+            [date]: {
+              ...log,
+              tasks: log.tasks.map((t) =>
+                t.id === taskId
+                  ? { ...t, deferredTo: pl.date, deferCount: deferCount + 1, replanNote: reason }
+                  : t,
+              ),
+            },
+          },
+        });
+
+        return { date: pl.date, reason, askDrop: !!pl.drop };
+      },
+
+      undoMove: (date, taskId) => {
+        const { plan, logs } = get();
+        const log = logs[date];
+        const task = log?.tasks.find((t) => t.id === taskId);
+        if (!plan || !log || !task) return;
+        set({
+          plan: { ...plan, parked: (plan.parked ?? []).filter((p) => p.sourceId !== task.sourceId) },
+          logs: {
+            ...logs,
+            [date]: {
+              ...log,
+              tasks: log.tasks.map((t) =>
+                t.id === taskId
+                  ? {
+                      ...t,
+                      deferredTo: undefined,
+                      replanNote: undefined,
+                      deferCount: Math.max((t.deferCount ?? 1) - 1, 0),
+                    }
+                  : t,
+              ),
+            },
+          },
+        });
+      },
+
+      dropTask: (date, taskId) => {
+        const { plan, logs } = get();
+        const log = logs[date];
+        const task = log?.tasks.find((t) => t.id === taskId);
+        if (!plan || !log || !task) return;
+        const dropped = new Set(plan.droppedIds ?? []);
+        dropped.add(task.sourceId);
+        set({
+          plan: {
+            ...plan,
+            droppedIds: [...dropped],
+            parked: (plan.parked ?? []).filter((p) => p.sourceId !== task.sourceId),
+          },
+          logs: {
+            ...logs,
+            [date]: { ...log, tasks: log.tasks.filter((t) => t.id !== taskId) },
+          },
+        });
+      },
+
+      undropTask: (sourceId) => {
+        const { plan } = get();
+        if (!plan) return;
+        set({ plan: { ...plan, droppedIds: (plan.droppedIds ?? []).filter((id) => id !== sourceId) } });
       },
 
       toggleTask: (date, taskId) => {
@@ -97,6 +232,7 @@ export const useAppStore = create<Store>()(
               detail: '自分で追加したタスク',
               estMin,
               tag: '自主',
+              priority: 'should',
               done: false,
             },
           ],

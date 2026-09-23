@@ -446,9 +446,9 @@ describe('翌日の自動調整', () => {
       date: base.startDate,
       closed: true,
       tasks: [
-        { id: '1', date: base.startDate, sourceId: 'cs1', kind: 'step', phase: 1, title: '', detail: '', estMin: 30, tag: '', done: true },
-        { id: '2', date: base.startDate, sourceId: 'cs2', kind: 'step', phase: 1, title: '', detail: '', estMin: 30, tag: '', done: false },
-        { id: '3', date: base.startDate, sourceId: 'csR1', kind: 'routine', phase: 1, title: '', detail: '', estMin: 30, tag: '', done: true },
+        { id: '1', date: base.startDate, sourceId: 'cs1', kind: 'step', phase: 1, title: '', detail: '', estMin: 30, tag: '', priority: 'must', done: true },
+        { id: '2', date: base.startDate, sourceId: 'cs2', kind: 'step', phase: 1, title: '', detail: '', estMin: 30, tag: '', priority: 'should', done: false },
+        { id: '3', date: base.startDate, sourceId: 'csR1', kind: 'routine', phase: 1, title: '', detail: '', estMin: 30, tag: '', priority: 'should', done: true },
       ],
     };
     const next = closeDay(buildPlan(p(), 'content-seo'), log);
@@ -476,6 +476,7 @@ describe('進捗計算', () => {
           detail: '',
           estMin: 30,
           tag: 'x',
+          priority: 'should' as const,
           done: i < d.done,
         })),
       };
@@ -585,7 +586,7 @@ describe('上司の発話', () => {
       date: '2026-10-05',
       closed: true,
       tasks: [
-        { id: '1', date: '2026-10-05', sourceId: 'a', kind: 'step', phase: 1, title: '', detail: '', estMin: 30, tag: '', done },
+        { id: '1', date: '2026-10-05', sourceId: 'a', kind: 'step', phase: 1, title: '', detail: '', estMin: 30, tag: '', priority: 'must', done },
       ],
     });
     expect(dayReview(prof, mk(true), pr, 'keep').tone).toBe('praise');
@@ -620,7 +621,7 @@ describe('改善サイクル', () => {
       tasks: [
         {
           id: 'x', date: addDays(date, -1), sourceId: 'x', kind: 'routine', phase: 1,
-          title: 't', detail: '', estMin: 30, tag: 'x', done: true,
+          title: 't', detail: '', estMin: 30, tag: 'x', priority: 'should', done: true,
         },
       ],
     },
@@ -725,7 +726,7 @@ describe('改善サイクル', () => {
       closed: true,
       tasks: Array.from({ length: n }, (_, j) => ({
         id: `${d}-${j}`, date: d, sourceId: `s${d}${j}`, kind: 'routine' as const,
-        phase: 1 as const, title: 't', detail: '', estMin: 30, tag: 'x', done,
+        phase: 1 as const, title: 't', detail: '', estMin: 30, tag: 'x', priority: 'should' as const, done,
       })),
     });
     // 5〜7日前は全滅、直近4日は完走（＝繰越は無いが7日の消化率は低い）
@@ -863,7 +864,7 @@ describe('週次レビューとテーマ', () => {
     const logs: Record<string, DayLog> = {
       [addDays(base.startDate, 1)]: {
         date: addDays(base.startDate, 1), closed: true, revenue: 3000,
-        tasks: [{ id: 'z', date: addDays(base.startDate, 1), sourceId: 'z', kind: 'routine', phase: 1, title: 't', detail: '', estMin: 30, tag: 'x', done: true }],
+        tasks: [{ id: 'z', date: addDays(base.startDate, 1), sourceId: 'z', kind: 'routine', phase: 1, title: 't', detail: '', estMin: 30, tag: 'x', priority: 'should', done: true }],
       },
     };
     const tasks = generateTasks({ plan, profile: prof, date, logs });
@@ -918,7 +919,7 @@ describe('週次レビューとテーマ', () => {
         date, closed: true,
         tasks: [1, 2].map((n) => ({
           id: `${date}-${n}`, date, sourceId: `s${n}`, kind: 'routine' as const, phase: 1 as const,
-          title: 't', detail: '', estMin: 30, tag: 'x', done: false,
+          title: 't', detail: '', estMin: 30, tag: 'x', priority: 'should' as const, done: false,
         })),
       };
     }

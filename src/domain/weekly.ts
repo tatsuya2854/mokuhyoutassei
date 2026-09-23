@@ -3,6 +3,7 @@ import { addDays, diffDays, weekKey } from '../lib/date';
 import { getPlaybook } from './playbooks';
 import { EXPLORE_DAYS, filterByGoal, goalKindOf } from './goals';
 import { requiredMonthly } from './decide';
+import { activeTasks } from './judge';
 
 /** 立ち上げ後にまわす改善サイクルの出し分けに使う状態 */
 export interface LoopState {
@@ -34,8 +35,9 @@ export function loopState(
   for (let i = 1; i <= 7; i++) {
     const log = logs[addDays(date, -i)];
     if (!log) continue;
-    done += log.tasks.filter((t) => t.done).length;
-    all += log.tasks.length;
+    const act = activeTasks(log.tasks);
+    done += act.filter((t) => t.done).length;
+    all += act.length;
   }
 
   return {
@@ -81,8 +83,9 @@ function weekStats(logs: Record<string, DayLog>, fromMonday: string) {
     const log = logs[addDays(fromMonday, i)];
     if (!log) continue;
     any = true;
-    done += log.tasks.filter((t) => t.done).length;
-    total += log.tasks.length;
+    const act = activeTasks(log.tasks);
+    done += act.filter((t) => t.done).length;
+    total += act.length;
     revenue += log.revenue ?? 0;
   }
   if (!any) return null;
