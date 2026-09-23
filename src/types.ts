@@ -1,5 +1,7 @@
 /** アプリ全体の型定義 */
 
+import type { Subscription } from './domain/entitlements';
+
 export type SkillId =
   | 'writing'
   | 'design'
@@ -27,9 +29,21 @@ export type AvoidId =
 
 export type GoalMode = 'monthly' | 'total';
 
+/** いま一番しんどいこと。ここから目標の型を決める */
+export type AnxietyId = 'money' | 'career' | 'lost' | 'behind' | 'nocontinue' | 'noskill';
+
+/** 目標の型。お金だけが目標じゃない */
+export type GoalKind = 'money' | 'proof' | 'skill' | 'habit' | 'explore';
+
 /** ヒアリング結果 */
 export interface Profile {
+  /** 入口で選んだ不安 */
+  anxiety: AnxietyId;
+  /** 不安から決まる目標の型 */
+  goalKind: GoalKind;
+  /** 目標の数値。単位は goalKind による（円 / 本 / 個 / 日 / 案） */
   goalAmount: number;
+  /** monthly は goalKind === 'money' のときだけ意味を持つ */
   goalMode: GoalMode;
   deadline: string; // YYYY-MM-DD
   weeklyHours: number;
@@ -111,8 +125,17 @@ export interface Decision {
   rejected: { playbookId: string; score: number; reason: string }[];
   verdict: string; // 「これでいく」の断言文
   feasibility: 'easy' | 'tight' | 'hard';
+  /** goalKind === 'money' のときだけ意味を持つ。他は 0 */
   requiredMonthly: number;
+  /** 探索モードのとき、並行して試す手段（先頭が playbookId） */
+  exploreIds?: string[];
 }
+
+/**
+ * タスクの重要度。1日に must はひとつだけ。
+ * 「3個中1個しか終わらなくても、その1個が最重要なら前進」を判定するための軸。
+ */
+export type Priority = 'must' | 'should' | 'nice';
 
 /** 生成された1タスク */
 export interface Task {
@@ -123,24 +146,59 @@ export interface Task {
   phase: PhaseNo;
   title: string;
   detail: string;
+  /** 見積り分数（長期記憶で補正済みの値が入る） */
   estMin: number;
+  /** カタログ上の素の見積り。補正前の値 */
+  baseMin?: number;
   tag: string;
+  priority: Priority;
   done: boolean;
   carriedFrom?: string; // 繰越元の日付
+  /** 「今日はパス」で送り先に決めた日付 */
+  deferredTo?: string;
+  /** 何回先送りされたか */
+  deferCount?: number;
+  /** 再計画を選んだときの理由表示 */
+  replanNote?: string;
 }
 
 export interface DayLog {
   date: string;
   tasks: Task[];
+  /** 実際にかかった分数。見積りとのズレを学習するのに使う */
   actualMin?: number;
-  revenue?: number; // その日に確定した収益
+  /** その日の成果。お金なら円、実績なら本数。目標タイプによって意味が変わる */
+  revenue?: number;
   memo?: string;
   closed: boolean; // 一日を締めたか
   mood?: 1 | 2 | 3;
 }
 
+/** 先送り・再計画で未来に置き直されたタスク */
+export interface ParkedTask {
+  sourceId: string;
+  kind: Task['kind'];
+  phase: PhaseNo;
+  title: string;
+  detail: string;
+  estMin: number;
+  baseMin?: number;
+  tag: string;
+  priority: Priority;
+  /** 置き直した先の日付 */
+  dueOn: string;
+  /** 何回先送りされたか */
+  deferCount: number;
+  /** どこから来たか（繰越表示に使う） */
+  from: string;
+  /** なぜその日に置いたのか（上司の説明） */
+  reason: string;
+}
+
 export interface Plan {
   playbookId: string;
+  /** 探索モードで並行して試す手段。探索が終わったら undefined になる */
+  exploreIds?: string[];
   phases: PhaseInfo[];
   /** 消化済みステップID（順番に消費する） */
   consumedStepIds: string[];
@@ -149,6 +207,10 @@ export interface Plan {
   /** 1日あたりの作業分数（調整で増減する） */
   dailyMinutes: number;
   baseDailyMinutes: number;
+  /** 先送り・再計画で未来に置き直されたタスク */
+  parked?: ParkedTask[];
+  /** 「もうやらない」と判断して捨てたタスクのID */
+  droppedIds?: string[];
 }
 
 export interface AppState {
@@ -157,4 +219,24 @@ export interface AppState {
   plan: Plan | null;
   logs: Record<string, DayLog>;
   createdAt: string;
+  /** 加入状態。null は未開始（＝まだ無料期間も始まっていない） */
+  sub: Subscription | null;
+  /** AI秘書との会話ログ */
+  chat: ChatMessage[];
 }
+
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  text: string;
+  at: string; // ISO datetime
+  /** 秘書が提案した操作。タップで実行できる */
+  actions?: ChatAction[];
+}
+
+/** 会話から直接実行できる操作 */
+export type ChatAction =
+  | { kind: 'defer'; taskId: string; label: string }
+  | { kind: 'replan'; taskId: string; label: string }
+  | { kind: 'done'; taskId: string; label: string }
+  | { kind: 'goto'; tab: string; label: string };

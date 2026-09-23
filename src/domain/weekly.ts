@@ -1,7 +1,9 @@
 import type { DayLog, Plan, Profile } from '../types';
 import { addDays, diffDays, weekKey } from '../lib/date';
 import { getPlaybook } from './playbooks';
+import { EXPLORE_DAYS, filterByGoal, goalKindOf } from './goals';
 import { requiredMonthly } from './decide';
+import { activeTasks } from './judge';
 
 /** 立ち上げ後にまわす改善サイクルの出し分けに使う状態 */
 export interface LoopState {
@@ -16,8 +18,15 @@ export interface LoopState {
 }
 
 /** 指定日時点での状態を、ログから素直に読む */
-export function loopState(plan: Plan, logs: Record<string, DayLog>, date: string): LoopState {
+export function loopState(
+  profile: Profile,
+  plan: Plan,
+  logs: Record<string, DayLog>,
+  date: string,
+): LoopState {
   const pb = getPlaybook(plan.playbookId);
+  // 目標タイプで出さないタスクは、立ち上げ完了の分母からも外す
+  const eligible = filterByGoal(pb.steps, goalKindOf(profile));
   const past = Object.values(logs).filter((l) => diffDays(l.date, date) >= 0);
   const revenue = past.reduce((a, l) => a + (l.revenue ?? 0), 0);
 
@@ -26,19 +35,32 @@ export function loopState(plan: Plan, logs: Record<string, DayLog>, date: string
   for (let i = 1; i <= 7; i++) {
     const log = logs[addDays(date, -i)];
     if (!log) continue;
-    done += log.tasks.filter((t) => t.done).length;
-    all += log.tasks.length;
+    const act = activeTasks(log.tasks);
+    done += act.filter((t) => t.done).length;
+    all += act.length;
   }
 
   return {
-    launched: plan.consumedStepIds.length >= pb.steps.length,
+    launched: plan.consumedStepIds.length >= eligible.length,
     revenue,
     recentRate: all === 0 ? 1 : done / all,
     recentDone: done,
   };
 }
 
-export type FocusId = 'start' | 'build' | 'sell' | 'convert' | 'raise' | 'systemize' | 'recover';
+export type FocusId =
+  | 'start'
+  | 'build'
+  | 'sell'
+  | 'convert'
+  | 'raise'
+  | 'systemize'
+  | 'recover'
+  | 'explore'
+  | 'make'
+  | 'finish'
+  | 'show'
+  | 'keep';
 
 export interface WeeklyFocus {
   id: FocusId;
@@ -61,8 +83,9 @@ function weekStats(logs: Record<string, DayLog>, fromMonday: string) {
     const log = logs[addDays(fromMonday, i)];
     if (!log) continue;
     any = true;
-    done += log.tasks.filter((t) => t.done).length;
-    total += log.tasks.length;
+    const act = activeTasks(log.tasks);
+    done += act.filter((t) => t.done).length;
+    total += act.length;
     revenue += log.revenue ?? 0;
   }
   if (!any) return null;
@@ -82,11 +105,25 @@ export function computeWeeklyFocus(
   const wk = weekKey(date);
   const weekNo = Math.floor(diffDays(weekKey(profile.startDate), wk) / 7) + 1;
   const lastWeek = weekStats(logs, addDays(wk, -7));
-  const st = loopState(plan, logs, date);
+  const st = loopState(profile, plan, logs, date);
   const need = requiredMonthly(profile);
   const pb = getPlaybook(plan.playbookId);
 
   const base = { weekKey: wk, weekNo, lastWeek };
+
+  // 探索中は「比べること」だけが今週の仕事
+  const exploring =
+    (plan.exploreIds?.length ?? 0) >= 2 &&
+    diffDays(plan.phases[0].startDate, date) < EXPLORE_DAYS;
+  if (exploring) {
+    return {
+      ...base,
+      id: 'explore',
+      theme: `${plan.exploreIds!.length}つを実際に触ってみる`,
+      why: '考えて決めようとしても出てこない。今週は結論を出さなくていい。手を動かして「どれがラクだったか」だけ集める。',
+      kpi: '試す手段それぞれに最低1回は手をつける',
+    };
+  }
 
   // 手が止まっているなら、何より先に流れを戻す
   if (lastWeek && lastWeek.total >= 3 && lastWeek.rate < 0.4) {
@@ -101,14 +138,57 @@ export function computeWeeklyFocus(
 
   if (!st.launched) {
     const phase1Done = plan.consumedStepIds.length > 0;
+    const ph = plan.phases[phase1Done ? 1 : 0];
+    const remaining = filterByGoal(pb.steps, goalKindOf(profile)).length - plan.consumedStepIds.length;
     return {
       ...base,
       id: phase1Done ? 'build' : 'start',
-      theme: phase1Done ? '売り物と入口を完成させる' : '何で・誰に・いくらで売るかを決め切る',
+      theme: ph.name === '決める' && phase1Done ? ph.goal : `${ph.name}：${ph.goal}`,
       why: phase1Done
-        ? 'まだ世に出てない状態。売るものと窓口が無い限り、どれだけ作業しても1円にならない。'
-        : 'ここが決まらないと全部の作業がブレる。今週で確定させて、来週から出しにいく。',
-      kpi: `立ち上げステップを今週中に${Math.min(5, pb.steps.length - plan.consumedStepIds.length)}個進める`,
+        ? 'まだ形になってない状態。ここを越えないと、どれだけ作業しても外からは何も見えない。'
+        : 'ここが決まらないと全部の作業がブレる。今週で確定させて、来週から前に進む。',
+      kpi: `立ち上げのステップを今週中に${Math.max(1, Math.min(5, remaining))}個進める`,
+    };
+  }
+
+  // お金以外の目標は、ここから先の「売る／単価」の話に入らない
+  if (profile.goalKind !== 'money') {
+    if (profile.goalKind === 'habit') {
+      const streakGoal = profile.goalAmount;
+      return {
+        ...base,
+        id: 'keep',
+        theme: 'ゼロの日を作らない',
+        why: `目標は${streakGoal}日つづけること。量を増やすことじゃない。1日1件でも触れば、その日は勝ち。`,
+        kpi: '7日間、毎日1件以上チェックを入れる',
+      };
+    }
+    if (profile.goalKind === 'skill') {
+      return {
+        ...base,
+        id: 'make',
+        theme: '読むのをやめて、手を動かす',
+        why: '「分かった」と「できる」は別物。インプットを止めて、手を動かした時間だけを今週の成果とみなす。',
+        kpi: '手を動かすタスクを週5回。調べるだけの日を作らない',
+      };
+    }
+    // proof：完成させて、外に出すまでが一区切り
+    const madeAny = st.revenue > 0;
+    if (!madeAny) {
+      return {
+        ...base,
+        id: 'finish',
+        theme: '粗くていいから、1つ完成させる',
+        why: '未完成が増えるのが一番まずい。完成度60%でも「完成」は完成。未完成は0点。',
+        kpi: '今週中に1つ「できました」と言える状態にする',
+      };
+    }
+    return {
+      ...base,
+      id: 'show',
+      theme: '作ったものを、人が見られる場所に置く',
+      why: `${st.revenue}つ形になってる。ただ置いてないものは無いのと同じ。見せて初めて実績になる。`,
+      kpi: '完成したものを1つ、外から見えるところに公開する',
     };
   }
 

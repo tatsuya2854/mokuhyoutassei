@@ -2,12 +2,14 @@ import { useAppStore } from '../store/useAppStore';
 import { computeProgress, dailyRates, monthlyRevenue, tagBreakdown } from '../domain/progress';
 import { insights } from '../domain/coach';
 import { computeWeeklyFocus } from '../domain/weekly';
+import { buildMemory, memoryInsights } from '../domain/memory';
+import { goalKindOf, goalLabel } from '../domain/goals';
 import { Card, Empty, Progress, SectionTitle, Stat } from '../components/ui';
 import { cx } from '../lib/style';
 import { formatShort, todayISO } from '../lib/date';
 
 export default function Stats() {
-  const { profile, plan, logs } = useAppStore();
+  const { profile, plan, logs, entitled } = useAppStore();
   if (!profile || !plan) return null;
 
   const today = todayISO();
@@ -15,9 +17,12 @@ export default function Stats() {
   const rates = dailyRates(logs, 14, today);
   const months = monthlyRevenue(logs);
   const tags = tagBreakdown(logs);
-  const tips = insights(plan, p);
+  const tips = insights(profile, plan, p);
   const focus = computeWeeklyFocus(profile, plan, logs, today);
+  const mem = buildMemory(logs, today);
+  const learned = memoryInsights(mem);
 
+  const kind = goalKindOf(profile);
   const paceLabel = {
     ahead: { t: '先行してる', c: 'text-acid-400' },
     onTrack: { t: '想定どおり', c: 'text-ink-100' },
@@ -34,16 +39,34 @@ export default function Stats() {
 
       <div className="mt-4 grid grid-cols-2 gap-2">
         <Stat
-          label="累計収益"
-          value={`${p.totalRevenue.toLocaleString()}円`}
-          sub={`目標 ${profile.goalAmount.toLocaleString()}円`}
-          tone={p.totalRevenue > 0 ? 'good' : 'default'}
+          label={kind.id === 'money' ? '累計収益' : `累計の${kind.outcomeName}`}
+          value={
+            kind.tracksOutcome ? `${p.totalRevenue.toLocaleString()}${kind.unit}` : `${p.streak}日`
+          }
+          sub={`目標 ${goalLabel(profile)}`}
+          tone={p.totalRevenue > 0 || p.streak > 0 ? 'good' : 'default'}
         />
         <Stat
-          label="今月の収益"
-          value={`${p.monthRevenue.toLocaleString()}円`}
-          sub={`必要 ${p.needMonthly.toLocaleString()}円/月`}
-          tone={p.monthRevenue >= p.needMonthly ? 'good' : 'default'}
+          label={kind.id === 'money' ? '今月の収益' : '計画の消化'}
+          value={
+            kind.id === 'money'
+              ? `${p.monthRevenue.toLocaleString()}円`
+              : `${Math.round(p.planProgress * 100)}%`
+          }
+          sub={
+            kind.id === 'money'
+              ? `必要 ${p.needMonthly.toLocaleString()}円/月`
+              : `期間の経過 ${Math.round(p.elapsed * 100)}%`
+          }
+          tone={
+            kind.id === 'money'
+              ? p.monthRevenue >= p.needMonthly
+                ? 'good'
+                : 'default'
+              : p.planProgress >= p.elapsed
+                ? 'good'
+                : 'default'
+          }
         />
         <Stat
           label="直近7日の消化率"
@@ -100,6 +123,24 @@ export default function Stats() {
         </div>
       </div>
 
+      {entitled('memoryInsights') && (
+        <div className="mt-7">
+          <SectionTitle right={<span className="text-[11px] text-ink-500">{mem.days}日分</span>}>
+            あなたについて分かったこと
+          </SectionTitle>
+          <div className="space-y-2">
+            {learned.map((t, i) => (
+              <Card key={i} className="border-ink-700 bg-ink-850">
+                <p className="text-[13.5px] leading-relaxed text-ink-200">{t}</p>
+              </Card>
+            ))}
+          </div>
+          <p className="mt-2 text-[11px] leading-relaxed text-ink-500">
+            ここで分かったことは、そのまま明日以降の見積りとタスクの置き場所に反映される。
+          </p>
+        </div>
+      )}
+
       <div className="mt-7">
         <SectionTitle right={<span className="text-[11px] text-ink-500">直近14日</span>}>
           日次の消化率
@@ -140,7 +181,7 @@ export default function Stats() {
         </Card>
       </div>
 
-      <div className="mt-7">
+      <div className={cx('mt-7', kind.id !== 'money' && 'hidden')}>
         <SectionTitle>収益の推移</SectionTitle>
         {months.length === 0 ? (
           <Empty

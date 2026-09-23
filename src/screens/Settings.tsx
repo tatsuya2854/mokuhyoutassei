@@ -4,11 +4,27 @@ import { PLAYBOOKS, getPlaybook } from '../domain/playbooks';
 import { Button, Card, Field, SectionTitle } from '../components/ui';
 import { cx, inputCls } from '../lib/style';
 import { Sheet } from './Today';
-import { formatJP } from '../lib/date';
+import { formatJP, todayISO } from '../lib/date';
+import { PLANS, trialDaysLeft } from '../domain/entitlements';
 
-export default function Settings({ onReset }: { onReset: () => void }) {
-  const { profile, plan, decision, updateProfile, switchPlaybook, reset, importState } =
-    useAppStore();
+export default function Settings({
+  onReset,
+  onUpgrade,
+}: {
+  onReset: () => void;
+  onUpgrade: () => void;
+}) {
+  const {
+    profile,
+    plan,
+    decision,
+    updateProfile,
+    switchPlaybook,
+    reset,
+    importState,
+    sub,
+    activePlan,
+  } = useAppStore();
   const [sheet, setSheet] = useState<'none' | 'edit' | 'switch' | 'danger'>('none');
   const [msg, setMsg] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
@@ -45,6 +61,24 @@ export default function Settings({ onReset }: { onReset: () => void }) {
       <h1 className="text-[22px] font-extrabold">設定</h1>
 
       <div className="mt-5">
+        <SectionTitle>プラン</SectionTitle>
+        <button
+          onClick={onUpgrade}
+          className="pressable w-full rounded-2xl border border-ink-700 bg-ink-850 px-4 py-3.5 text-left"
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-[14px] font-extrabold">{PLANS[activePlan()].name}</span>
+            <span className="text-[11.5px] font-bold text-ink-400">変更する ›</span>
+          </div>
+          <p className="mt-1 text-[12px] leading-relaxed text-ink-500">
+            {sub?.status === 'trialing' && trialDaysLeft(sub, todayISO()) > 0
+              ? `無料期間・残り${trialDaysLeft(sub, todayISO())}日。終わるとFreeに戻る。`
+              : PLANS[activePlan()].lead}
+          </p>
+        </button>
+      </div>
+
+      <div className="mt-6">
         <SectionTitle>いまの条件</SectionTitle>
         <Card>
           <Row label="手段" value={pb.name} />

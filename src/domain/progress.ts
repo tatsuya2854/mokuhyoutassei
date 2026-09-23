@@ -1,7 +1,9 @@
 import { getPlaybook } from './playbooks';
+import { filterByGoal, goalKindOf } from './goals';
 import { requiredMonthly } from './decide';
 import type { DayLog, Plan, Profile } from '../types';
 import { addDays, diffDays, monthKey, todayISO } from '../lib/date';
+import { activeTasks } from './judge';
 
 export interface Progress {
   /** 期間の経過率 0-1 */
@@ -48,7 +50,7 @@ export function computeProgress(
   const passed = Math.max(diffDays(profile.startDate, today), 0);
   const elapsed = Math.min(passed / totalDays, 1);
 
-  const stepsTotal = getPlaybook(plan.playbookId).steps.length;
+  const stepsTotal = filterByGoal(getPlaybook(plan.playbookId).steps, goalKindOf(profile)).length;
   const planProgress = Math.min(plan.consumedStepIds.length / Math.max(stepsTotal, 1), 1);
 
   // 先読みで生成された未来日のタスクは実績に数えない
@@ -73,8 +75,9 @@ export function computeProgress(
     const d = addDays(today, -i + 1);
     const log = logs[d];
     if (!log) continue;
-    rDone += log.tasks.filter((t) => t.done).length;
-    rAll += log.tasks.length;
+    const act = activeTasks(log.tasks);
+    rDone += act.filter((t) => t.done).length;
+    rAll += act.length;
   }
   const recentRate = rAll === 0 ? 0 : rDone / rAll;
 
@@ -95,13 +98,14 @@ export function computeProgress(
     const d = addDays(today, -i);
     const log = logs[d];
     if (!log) break;
-    const done = log.tasks.filter((t) => t.done).length;
-    if (done === 0 && log.tasks.length > 0) missStreak++;
+    const act = activeTasks(log.tasks);
+    const done = act.filter((t) => t.done).length;
+    if (done === 0 && act.length > 0) missStreak++;
     else break;
   }
 
   const doneTasks = entries.reduce((a, l) => a + l.tasks.filter((t) => t.done).length, 0);
-  const allTasks = entries.reduce((a, l) => a + l.tasks.length, 0);
+  const allTasks = entries.reduce((a, l) => a + activeTasks(l.tasks).length, 0);
 
   // --- ペース判定：計画進捗と収益進捗の良い方を経過率と比較 ---
   const achieved = Math.max(planProgress, revenueProgress);
@@ -155,8 +159,9 @@ export function dailyRates(
   for (let i = days - 1; i >= 0; i--) {
     const date = addDays(today, -i);
     const log = logs[date];
-    const total = log?.tasks.length ?? 0;
-    const done = log?.tasks.filter((t) => t.done).length ?? 0;
+    const act = log ? activeTasks(log.tasks) : [];
+    const total = act.length;
+    const done = act.filter((t) => t.done).length;
     out.push({ date, total, done, rate: total === 0 ? 0 : done / total });
   }
   return out;
