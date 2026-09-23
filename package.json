@@ -7,6 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
+    "cf:deploy": "npm run build && wrangler deploy",
+    "cf:check": "wrangler deploy --dry-run",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "oxlint",
@@ -29,7 +31,8 @@
     "tailwindcss": "^4.3.3",
     "typescript": "~6.0.2",
     "vite": "^8.3.0",
-    "vitest": "^5.0.0"
+    "vitest": "^5.0.0",
+    "wrangler": "^4.136.3"
   },
   "description": "目標金額と期限から手段を1つに決め切り、毎日やることを指示する「AI上司」アプリ"
 }

@@ -1,0 +1,65 @@
+name: Deploy to Cloudflare Workers
+
+# Cloudflare の Workers Builds（ダッシュボード側のビルド）が使えないときの経路。
+# GitHub Actions から直接 wrangler でデプロイする。
+#
+# ■ シークレットが未設定なら何もしない
+# CLOUDFLARE_API_TOKEN が無い状態でも CI を落とさず、静かにスキップする。
+#
+# ■ 鍵はリポジトリに置かない
+# トークンは GitHub の Settings → Secrets and variables → Actions に置く。
+# ワークフローからは secrets 経由でしか触らず、ログにも出さない。
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# 同じブランチのデプロイが重なったら、古い方を打ち切る
+concurrency:
+  group: cloudflare-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: シークレットの有無を確認
+        id: guard
+        env:
+          TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "CLOUDFLARE_API_TOKEN が未設定のためスキップします。"
+            echo "設定方法は README の「公開する」を参照してください。"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.guard.outputs.enabled == 'true'
+
+      - uses: actions/setup-node@v4
+        if: steps.guard.outputs.enabled == 'true'
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+        if: steps.guard.outputs.enabled == 'true'
+
+      - run: npm test
+        if: steps.guard.outputs.enabled == 'true'
+
+      # ルート配信なので VITE_BASE は渡さない（既定の / が使われる）
+      - run: npm run build
+        if: steps.guard.outputs.enabled == 'true'
+
+      - name: Cloudflare にデプロイ
+        if: steps.guard.outputs.enabled == 'true'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy
