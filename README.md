@@ -404,8 +404,14 @@ Workers ではなく Pages プロジェクトとして繋ぐ場合は、`wrangle
 | Build command | `npm run build` |
 | Build output directory | `dist` |
 
-SPAのフォールバックは `public/_redirects` が `dist/_redirects` として出力され、
-Cloudflare Pages がそれを読みます。
+SPAのフォールバック用に `public/_redirects` を置く必要があります（`/*  /index.html  200`）。
+
+> [!warning]
+> **Workers と Pages で `_redirects` の扱いが違います。**
+> `/*  /index.html  200` は Pages では正しい書き方ですが、Workers に渡すと
+> 「無限ループ」と判定されてデプロイが失敗します（`code: 100324`）。
+> Workers では `_redirects` を置かず、`wrangler.jsonc` の
+> `not_found_handling` に任せてください。
 
 ### Vercel / Netlify
 
