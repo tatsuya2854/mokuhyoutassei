@@ -349,6 +349,27 @@ Cloudflare ダッシュボードの **Workers & Pages → (プロジェクト) �
 
 以降、`main` に push すると Cloudflare が自動でビルドして公開します。
 
+#### ダッシュボードのビルドが使えない場合
+
+Workers Builds が動かない環境向けに、GitHub Actions から直接デプロイする経路も
+用意しています（`.github/workflows/cloudflare.yml`）。
+
+1. Cloudflare ダッシュボード → **My Profile → API Tokens → Create Token**
+   → テンプレート **Edit Cloudflare Workers** でトークンを作る
+2. GitHub リポジトリ → **Settings → Secrets and variables → Actions → New repository secret**
+
+| Secret 名 | 中身 |
+| --- | --- |
+| `CLOUDFLARE_API_TOKEN` | 1で作ったトークン |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare のアカウントID |
+
+**トークンは絶対にリポジトリに書かないでください。** ワークフローは `secrets` 経由でしか
+触らず、ログにも出しません。シークレットが未設定のときは、CI を落とさずに静かに
+スキップします。
+
+この経路を使う場合は、二重にデプロイされないよう Cloudflare 側の Git 連携は
+解除しておいてください。
+
 手元から出すこともできます。
 
 ```bash
