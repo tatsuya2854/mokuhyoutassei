@@ -64,3 +64,24 @@ export const IconHand = (p: P) => (
     <path d="m8.3 12.2 2.6 2.6 5-5.4" />
   </svg>
 );
+
+export const IconChat = (p: P) => (
+  <svg {...base} {...p}>
+    <path d="M20 12a7.5 7.5 0 0 1-7.5 7.5H8l-4 2.5.9-3.6A7.5 7.5 0 1 1 20 12Z" />
+    <path d="M8.5 11.5h7M8.5 14.5h4" />
+  </svg>
+);
+
+export const IconMic = (p: P) => (
+  <svg {...base} {...p}>
+    <rect x="9" y="3" width="6" height="10.5" rx="3" />
+    <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3" />
+  </svg>
+);
+
+export const IconLock = (p: P) => (
+  <svg {...base} {...p}>
+    <rect x="4.5" y="10" width="15" height="10.5" rx="2.5" />
+    <path d="M8 10V7.5a4 4 0 0 1 8 0V10" />
+  </svg>
+);

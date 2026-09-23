@@ -1,13 +1,17 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { AppState, DayLog, ParkedTask, Plan, Profile } from '../types';
+import type { AppState, ChatMessage, DayLog, ParkedTask, Plan, Profile } from '../types';
 import { decide, decideWith } from '../domain/decide';
 import { buildPlan, computeDailyMinutes, generateTasks } from '../domain/planner';
 import { closeDay, computeAdjustment } from '../domain/adjust';
 import { computeProgress } from '../domain/progress';
-import { buildMemory, placeTask } from '../domain/memory';
+import { BLANK_MEMORY, buildMemory, placeTask } from '../domain/memory';
 import type { Memory } from '../domain/memory';
 import { todayISO } from '../lib/date';
+import type { Cycle, FeatureId, LimitId, PlanId } from '../domain/entitlements';
+import { can, effectivePlan, limitOf, startTrial } from '../domain/entitlements';
+import { billing } from '../billing';
+import { assistant } from '../assistant';
 
 /** 「今日はパス」と「再計画」の違い。どちらも未来に置き直すが、言い方と置き方が変わる */
 export type MoveMode = 'defer' | 'replan';
@@ -46,6 +50,27 @@ interface Store extends AppState {
   updateProfile: (patch: Partial<Profile>) => void;
   reset: () => void;
   importState: (raw: string) => boolean;
+
+  /* --- 課金 --- */
+  /** いま実際に使えるプラン。無料期間が切れていれば free に落ちる */
+  activePlan: () => PlanId;
+  /** その機能が使えるか。画面側はこれしか聞かない */
+  entitled: (feature: FeatureId) => boolean;
+  /** 上限値を引く */
+  limit: (key: LimitId) => number;
+  /** 申し込み。外部の決済ページに飛ぶ場合は url が返る */
+  subscribe: (planId: PlanId, cycle: Cycle) => Promise<string | null>;
+  /** 解約・支払い方法の変更 */
+  manageBilling: () => Promise<string | null>;
+  /** サーバー側の加入状態を取り直す */
+  refreshSubscription: () => Promise<void>;
+
+  /* --- AI秘書 --- */
+  /** 話しかける。返事は chat に積まれる */
+  ask: (text: string) => Promise<void>;
+  clearChat: () => void;
+  /** 今日すでに何回話したか（無料枠の判定に使う） */
+  chatCountToday: () => number;
 }
 
 const empty: AppState = {
@@ -54,6 +79,8 @@ const empty: AppState = {
   plan: null,
   logs: {},
   createdAt: todayISO(),
+  sub: null,
+  chat: [],
 };
 
 export const useAppStore = create<Store>()(
@@ -64,8 +91,18 @@ export const useAppStore = create<Store>()(
       start: (profile) => {
         const decision = decide(profile);
         const plan = buildPlan(profile, decision.playbookId, decision.exploreIds);
-        set({ profile, decision, plan, logs: {}, createdAt: todayISO() });
-        get().ensureDay(todayISO());
+        const today = todayISO();
+        // 始めた瞬間から無料期間。カード登録を先に求めない
+        set({
+          profile,
+          decision,
+          plan,
+          logs: {},
+          chat: [],
+          createdAt: today,
+          sub: get().sub ?? startTrial(today),
+        });
+        get().ensureDay(today);
       },
 
       switchPlaybook: (playbookId) => {
@@ -86,7 +123,8 @@ export const useAppStore = create<Store>()(
         const { plan, profile, logs } = get();
         if (!plan || !profile) return;
         if (logs[date]) return;
-        const memory = buildMemory(logs, date);
+        // 見積りの自動補正は有料機能。素の見積りでも計画は回る
+        const memory = get().entitled('memoryEstimate') ? buildMemory(logs, date) : BLANK_MEMORY;
         const tasks = generateTasks({ plan, profile, date, logs, memory });
         // その日に呼び戻したぶんは、置き場（parked）から外す
         const shown = new Set(tasks.map((t) => t.sourceId));
@@ -280,6 +318,93 @@ export const useAppStore = create<Store>()(
         });
       },
 
+      /* ----------------------------- 課金 ----------------------------- */
+
+      activePlan: () => effectivePlan(get().sub, todayISO()),
+
+      entitled: (feature) => can(effectivePlan(get().sub, todayISO()), feature),
+
+      limit: (key) => limitOf(effectivePlan(get().sub, todayISO()), key),
+
+      subscribe: async (planId, cycle) => {
+        const r = await billing.startCheckout({ planId, cycle });
+        if (r.subscription) set({ sub: r.subscription });
+        return r.url ?? null;
+      },
+
+      manageBilling: async () => {
+        const r = await billing.openPortal();
+        if (!r.url) {
+          // ローカル実装は解約がその場で終わるので、状態を取り直す
+          set({ sub: await billing.getSubscription() });
+        }
+        return r.url ?? null;
+      },
+
+      refreshSubscription: async () => {
+        try {
+          const remote = await billing.getSubscription();
+          if (remote) set({ sub: remote });
+        } catch {
+          // 取りに行けないときは、手元の状態のまま動かす。
+          // 課金の都合でアプリが使えなくなる方が損失が大きい。
+        }
+      },
+
+      /* ---------------------------- AI秘書 ---------------------------- */
+
+      chatCountToday: () => {
+        const d = todayISO();
+        return get().chat.filter((m) => m.role === 'user' && m.at.slice(0, 10) === d).length;
+      },
+
+      ask: async (text) => {
+        const { profile, plan, logs, chat } = get();
+        if (!profile || !plan || !text.trim()) return;
+        const today = todayISO();
+        const now = new Date().toISOString();
+
+        const mine: ChatMessage = {
+          id: `u${Date.now()}`,
+          role: 'user',
+          text: text.trim(),
+          at: now,
+        };
+        set({ chat: [...chat, mine] });
+
+        const log = logs[today] ?? null;
+        const reply = await assistant.reply({
+          text: mine.text,
+          ctx: {
+            profile,
+            plan,
+            progress: computeProgress(profile, plan, logs, today),
+            memory: buildMemory(logs, today),
+            today,
+            tasks: log?.tasks ?? [],
+            log,
+            history: get()
+              .chat.slice(-6)
+              .map((m) => ({ role: m.role, text: m.text })),
+          },
+        });
+
+        set({
+          chat: [
+            ...get().chat,
+            {
+              id: `a${Date.now()}`,
+              role: 'assistant',
+              text: reply.text,
+              at: new Date().toISOString(),
+              actions: reply.actions,
+            },
+          ],
+        });
+      },
+
+      clearChat: () => set({ chat: [] }),
+
       reset: () => set({ ...empty, createdAt: todayISO() }),
 
       importState: (raw) => {
@@ -292,6 +417,8 @@ export const useAppStore = create<Store>()(
             plan: data.plan,
             logs: data.logs ?? {},
             createdAt: data.createdAt ?? todayISO(),
+            sub: data.sub ?? get().sub,
+            chat: data.chat ?? [],
           });
           return true;
         } catch {
@@ -301,16 +428,24 @@ export const useAppStore = create<Store>()(
     }),
     {
       name: 'mokuhyou-tassei-v1',
-      version: 2,
-      // v1（目標＝金額のみ）で保存されたデータを読めるようにする
+      version: 3,
+      // 古い保存データをそのまま読めるようにする（消さない）
       migrate: (persisted, version) => {
-        const st = persisted as Partial<AppState>;
-        if (version >= 2 || !st?.profile) return st as AppState;
-        const prof = st.profile as Profile & Partial<Pick<Profile, 'anxiety' | 'goalKind'>>;
-        return {
-          ...st,
-          profile: { ...prof, anxiety: prof.anxiety ?? 'money', goalKind: prof.goalKind ?? 'money' },
-        } as AppState;
+        let st = persisted as Partial<AppState>;
+        if (!st?.profile) return st as AppState;
+        // v1（目標＝金額のみ）→ v2（目標タイプ）
+        if (version < 2) {
+          const prof = st.profile as Profile & Partial<Pick<Profile, 'anxiety' | 'goalKind'>>;
+          st = {
+            ...st,
+            profile: { ...prof, anxiety: prof.anxiety ?? 'money', goalKind: prof.goalKind ?? 'money' },
+          };
+        }
+        // v2 → v3（課金と会話）。すでに使っている人は無料期間からやり直しにする
+        if (version < 3) {
+          st = { ...st, sub: st.sub ?? startTrial(todayISO()), chat: st.chat ?? [] };
+        }
+        return st as AppState;
       },
     },
   ),

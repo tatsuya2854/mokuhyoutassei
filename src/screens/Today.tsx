@@ -11,10 +11,11 @@ import { computeWeeklyFocus } from '../domain/weekly';
 import { Button, Card, Progress, SectionTitle } from '../components/ui';
 import { cx, inputCls } from '../lib/style';
 import { addDays, formatJP, todayISO } from '../lib/date';
+import { PLANS, trialDaysLeft } from '../domain/entitlements';
 import type { Task } from '../types';
 import { IconFire, IconHand, IconTarget } from '../components/icons';
 
-export default function Today() {
+export default function Today({ onUpgrade }: { onUpgrade: () => void }) {
   const {
     profile,
     plan,
@@ -27,6 +28,9 @@ export default function Today() {
     moveTask,
     undoMove,
     dropTask,
+    sub,
+    activePlan,
+    entitled,
   } = useAppStore();
   const [date, setDate] = useState(todayISO());
   const [sheet, setSheet] = useState<'none' | 'close' | 'result' | 'add'>('none');
@@ -74,7 +78,12 @@ export default function Today() {
   const isToday = date === todayISO();
   const mustTask = live.find((t) => t.priority === 'must');
 
+  const canReplan = entitled('smartReplan');
   const onMove = (taskId: string, mode: 'defer' | 'replan') => {
+    if (!canReplan) {
+      onUpgrade();
+      return;
+    }
     const r = moveTask(date, taskId, mode);
     if (r) setToast({ ...r, taskId });
   };
@@ -135,6 +144,9 @@ export default function Today() {
         </button>
       </div>
 
+      {/* 無料期間の残り。切れたあとは何が止まっているかを出す */}
+      {isToday && <TrialBar sub={sub} plan={activePlan()} onUpgrade={onUpgrade} />}
+
       {/* 上司の指示 */}
       <div className={cx('animate-rise card border p-4', toneCls)}>
         <div className="flex items-center gap-2">
@@ -160,7 +172,8 @@ export default function Today() {
       </div>
 
       {/* 今週のテーマ */}
-      <button
+      {entitled('weeklyFocus') && (
+      <><button
         onClick={() => setWeekOpen((v) => !v)}
         className="pressable mt-3 flex w-full items-start gap-2.5 rounded-2xl border border-ink-700 bg-ink-850 px-4 py-3 text-left"
       >
@@ -187,6 +200,7 @@ export default function Today() {
             </div>
           )}
         </div>
+      )}</>
       )}
 
       {/* 今日の進み具合 */}
@@ -257,7 +271,9 @@ export default function Today() {
         </SectionTitle>
         {!log.closed && live.length > 0 && (
           <p className="mb-2 text-[11.5px] leading-relaxed text-ink-500">
-            左へスワイプで「今日はパス」、右へスワイプで「再計画」。全部やらなくていい。
+            {canReplan
+              ? '左へスワイプで「今日はパス」、右へスワイプで「再計画」。全部やらなくていい。'
+              : '全部やらなくていい。本命が終われば今日は前進。'}
           </p>
         )}
         <div className="space-y-2">
@@ -268,6 +284,7 @@ export default function Today() {
               locked={log.closed}
               onToggle={() => toggleTask(date, t.id)}
               onRemove={() => removeTask(date, t.id)}
+              canMove={canReplan}
               onDefer={() => onMove(t.id, 'defer')}
               onReplan={() => onMove(t.id, 'replan')}
               onUndoMove={() => undoMove(date, t.id)}
@@ -525,6 +542,45 @@ export default function Today() {
   );
 }
 
+function TrialBar({
+  sub,
+  plan,
+  onUpgrade,
+}: {
+  sub: ReturnType<typeof useAppStore.getState>['sub'];
+  plan: keyof typeof PLANS;
+  onUpgrade: () => void;
+}) {
+  const left = trialDaysLeft(sub, todayISO());
+  if (sub?.status === 'trialing' && left > 0) {
+    return (
+      <button
+        onClick={onUpgrade}
+        className="pressable mb-3 flex w-full items-center justify-between rounded-2xl border border-acid-500/30 bg-acid-500/5 px-4 py-2.5 text-left"
+      >
+        <span className="text-[12.5px] font-extrabold text-acid-400">
+          無料期間・残り{left}日
+        </span>
+        <span className="text-[11.5px] font-bold text-ink-400">プランを見る ›</span>
+      </button>
+    );
+  }
+  if (plan === 'free') {
+    return (
+      <button
+        onClick={onUpgrade}
+        className="pressable mb-3 w-full rounded-2xl border border-ink-700 bg-ink-850 px-4 py-3 text-left"
+      >
+        <div className="text-[12.5px] font-extrabold">いまはFree。タスクは出続ける。</div>
+        <div className="mt-0.5 text-[11.5px] leading-relaxed text-ink-500">
+          止まっているのは、スワイプでの置き直し・見積りの自動補正・AI秘書。プランを見る ›
+        </div>
+      </button>
+    );
+  }
+  return null;
+}
+
 /** スワイプで確定する距離 */
 const SWIPE_THRESHOLD = 76;
 
@@ -537,6 +593,7 @@ function TaskRow({
   onUndoMove,
   onDrop,
   locked,
+  canMove,
 }: {
   task: Task;
   onToggle: () => void;
@@ -546,12 +603,13 @@ function TaskRow({
   onUndoMove: () => void;
   onDrop: () => void;
   locked: boolean;
+  canMove: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [dx, setDx] = useState(0);
   const drag = useRef({ x: 0, y: 0, axis: '' as '' | 'x' | 'y', id: -1 });
   const moved = task.deferredTo;
-  const swipeable = !locked && !moved && !task.done;
+  const swipeable = !locked && !moved && !task.done && canMove;
 
   const end = () => {
     if (drag.current.axis === 'x') {

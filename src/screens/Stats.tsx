@@ -9,7 +9,7 @@ import { cx } from '../lib/style';
 import { formatShort, todayISO } from '../lib/date';
 
 export default function Stats() {
-  const { profile, plan, logs } = useAppStore();
+  const { profile, plan, logs, entitled } = useAppStore();
   if (!profile || !plan) return null;
 
   const today = todayISO();
@@ -123,21 +123,23 @@ export default function Stats() {
         </div>
       </div>
 
-      <div className="mt-7">
-        <SectionTitle right={<span className="text-[11px] text-ink-500">{mem.days}日分</span>}>
-          あなたについて分かったこと
-        </SectionTitle>
-        <div className="space-y-2">
-          {learned.map((t, i) => (
-            <Card key={i} className="border-ink-700 bg-ink-850">
-              <p className="text-[13.5px] leading-relaxed text-ink-200">{t}</p>
-            </Card>
-          ))}
+      {entitled('memoryInsights') && (
+        <div className="mt-7">
+          <SectionTitle right={<span className="text-[11px] text-ink-500">{mem.days}日分</span>}>
+            あなたについて分かったこと
+          </SectionTitle>
+          <div className="space-y-2">
+            {learned.map((t, i) => (
+              <Card key={i} className="border-ink-700 bg-ink-850">
+                <p className="text-[13.5px] leading-relaxed text-ink-200">{t}</p>
+              </Card>
+            ))}
+          </div>
+          <p className="mt-2 text-[11px] leading-relaxed text-ink-500">
+            ここで分かったことは、そのまま明日以降の見積りとタスクの置き場所に反映される。
+          </p>
         </div>
-        <p className="mt-2 text-[11px] leading-relaxed text-ink-500">
-          ここで分かったことは、そのまま明日以降の見積りとタスクの置き場所に反映される。
-        </p>
-      </div>
+      )}
 
       <div className="mt-7">
         <SectionTitle right={<span className="text-[11px] text-ink-500">直近14日</span>}>

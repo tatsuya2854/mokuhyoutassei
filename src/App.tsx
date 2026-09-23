@@ -7,14 +7,17 @@ import Plan from './screens/Plan';
 import Stats from './screens/Stats';
 import LogList from './screens/LogList';
 import Settings from './screens/Settings';
+import Chat from './screens/Chat';
+import Pricing from './screens/Pricing';
 import { cx } from './lib/style';
-import { IconBook, IconChart, IconGear, IconMap, IconTarget } from './components/icons';
+import { IconBook, IconChart, IconChat, IconGear, IconMap, IconTarget } from './components/icons';
 import { todayISO } from './lib/date';
 
-type Tab = 'today' | 'plan' | 'log' | 'stats' | 'settings';
+type Tab = 'today' | 'chat' | 'plan' | 'log' | 'stats' | 'settings';
 
 const TABS: { id: Tab; label: string; Icon: (p: { className?: string }) => React.ReactElement }[] = [
   { id: 'today', label: '今日', Icon: IconTarget },
+  { id: 'chat', label: '秘書', Icon: IconChat },
   { id: 'plan', label: '計画', Icon: IconMap },
   { id: 'log', label: '記録', Icon: IconBook },
   { id: 'stats', label: '分析', Icon: IconChart },
@@ -22,11 +25,12 @@ const TABS: { id: Tab; label: string; Icon: (p: { className?: string }) => React
 ];
 
 export default function App() {
-  const { profile, plan, ensureDay } = useAppStore();
+  const { profile, plan, ensureDay, refreshSubscription } = useAppStore();
   const [stage, setStage] = useState<'onboarding' | 'verdict' | 'app'>(
     profile && plan ? 'app' : 'onboarding',
   );
   const [tab, setTab] = useState<Tab>('today');
+  const [pricing, setPricing] = useState(false);
 
   // 起動時・日付またぎで当日分を用意する
   useEffect(() => {
@@ -36,6 +40,11 @@ export default function App() {
     return () => clearInterval(id);
   }, [stage, plan, ensureDay]);
 
+  // 決済サーバーがある場合だけ意味を持つ。無ければ手元の状態のまま動く
+  useEffect(() => {
+    if (stage === 'app') void refreshSubscription();
+  }, [stage, refreshSubscription]);
+
   if (stage === 'onboarding' && (!profile || !plan))
     return <Onboarding onDone={() => setStage('verdict')} />;
 
@@ -44,12 +53,14 @@ export default function App() {
   return (
     <div className="mx-auto flex min-h-dvh max-w-lg flex-col">
       <main className="flex-1">
-        {tab === 'today' && <Today />}
+        {tab === 'today' && <Today onUpgrade={() => setPricing(true)} />}
+        {tab === 'chat' && <Chat onUpgrade={() => setPricing(true)} />}
         {tab === 'plan' && <Plan />}
         {tab === 'log' && <LogList />}
         {tab === 'stats' && <Stats />}
         {tab === 'settings' && (
           <Settings
+            onUpgrade={() => setPricing(true)}
             onReset={() => {
               setStage('onboarding');
               setTab('today');
@@ -78,6 +89,8 @@ export default function App() {
           ))}
         </div>
       </nav>
+
+      {pricing && <Pricing onClose={() => setPricing(false)} />}
     </div>
   );
 }

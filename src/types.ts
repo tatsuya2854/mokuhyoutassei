@@ -1,5 +1,7 @@
 /** アプリ全体の型定義 */
 
+import type { Subscription } from './domain/entitlements';
+
 export type SkillId =
   | 'writing'
   | 'design'
@@ -217,4 +219,24 @@ export interface AppState {
   plan: Plan | null;
   logs: Record<string, DayLog>;
   createdAt: string;
+  /** 加入状態。null は未開始（＝まだ無料期間も始まっていない） */
+  sub: Subscription | null;
+  /** AI秘書との会話ログ */
+  chat: ChatMessage[];
 }
+
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  text: string;
+  at: string; // ISO datetime
+  /** 秘書が提案した操作。タップで実行できる */
+  actions?: ChatAction[];
+}
+
+/** 会話から直接実行できる操作 */
+export type ChatAction =
+  | { kind: 'defer'; taskId: string; label: string }
+  | { kind: 'replan'; taskId: string; label: string }
+  | { kind: 'done'; taskId: string; label: string }
+  | { kind: 'goto'; tab: string; label: string };
